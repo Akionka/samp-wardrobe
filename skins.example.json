@@ -1,0 +1,13 @@
+{
+  "skins": {
+    "jacob_spencer": {
+      "txd_path": "models/myskin.txd",
+      "dff_path": "models/myskin.dff",
+      "donor_model_id": 7
+    }
+  },
+  "players": {
+    "Jacob_Spencer": "jacob_spencer",
+    "Jacob_Alt": "jacob_spencer"
+  }
+}

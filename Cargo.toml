@@ -9,6 +9,8 @@ crate-type = ["cdylib"]
 [dependencies]
 log = "0.4.33"
 retour = "0.4.0-alpha.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 simplelog = "0.12.2"
 winapi = { version = "0.3.9", features = ["debugapi"] }
 windows-sys = { version = "0.52", features = [

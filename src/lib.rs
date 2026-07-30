@@ -1,9 +1,10 @@
 use retour::GenericDetour;
+use serde::Deserialize;
 use simplelog::*;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, c_void};
-use std::fs::File;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::fs::{self, File};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::HMODULE;
@@ -33,7 +34,6 @@ const ADDR_CTXDSTORE_SETCURRENTTXD: usize = 0x7319C0;
 
 const ADDR_CPED_SET_MODEL_INDEX: usize = 0x5E4880;
 const ADDR_CPEDMODELINFO_SETCLUMP: usize = 0x4C7340;
-const ADDR_FIND_PLAYER_PED: usize = 0x56E210;
 const ADDR_CGAME_PROCESS: usize = 0x53BEE0;
 
 // SA-MP 0.3.7-R1 offsets.
@@ -45,6 +45,10 @@ const REMOTE_PLAYER_DATA: usize = 0x00;
 const REMOTE_DATA_SAMP_PED: usize = 0x00;
 const SAMP_PED_GTA_PED: usize = 0x44;
 const SAMP_MAX_PLAYERS: usize = 1004;
+const REMOTE_PLAYER_NAME: usize = 0x0C;
+const REMOTE_PLAYER_NAME_LENGTH: usize = 0x1C;
+const REMOTE_PLAYER_NAME_CAPACITY: usize = 0x20;
+const MSVC_STRING_SSO_CAPACITY: usize = 15;
 
 // CBaseModelInfo and CEntity offsets in GTA SA 1.0 US.
 const MODEL_INFO_TXD_INDEX: usize = 0x0A;
@@ -60,37 +64,39 @@ const RWSTREAM_FILENAME: i32 = 2;
 const RWSTREAM_READ: i32 = 1;
 const RW_ID_CLUMP: u32 = 0x10;
 
-// Keep this true while testing the DFF/TXD pipeline on your own ped. Set it to
-// false to target TARGET_PLAYER_ID instead.
-const APPLY_TO_LOCAL_PLAYER: bool = true;
-
-// Metadata is cloned from this initialized vanilla ped. The resulting custom
-// model uses a private, currently unused model ID and does not replace slot 7.
-const DONOR_PED_MODEL_ID: i32 = 7;
 const PRIVATE_MODEL_ID_START: i32 = 18_000;
 const PRIVATE_MODEL_ID_END: i32 = 20_000;
-
-// Change this to the SA-MP ID of the player whose skin you want to override.
-// ID-based lookup is intentional for now: stRemotePlayer::strPlayerName is a
-// C++ std::string, so treating the remote-player address as a C string was UB.
-const TARGET_PLAYER_ID: usize = 0;
-const TXD_PATH: &str = "models/myskin.txd";
-const DFF_PATH: &str = "models/myskin.dff";
+const CONFIG_PATH: &str = "skins.json";
 
 type GameProcessFn = unsafe extern "cdecl" fn();
 
-#[derive(Clone, Copy)]
-enum LoaderState {
-    WaitingForAssets,
-    Ready(i32),
-    Failed,
+#[derive(Debug, Deserialize)]
+struct SkinDefinition {
+    txd_path: String,
+    dff_path: String,
+    donor_model_id: i32,
 }
 
-// These are written before the hook is enabled. The hook then owns all
-// interaction with GTA/RenderWare objects on GTA's game thread.
-static SAMP_BASE: AtomicUsize = AtomicUsize::new(0);
+#[derive(Debug, Default, Deserialize)]
+struct SkinConfig {
+    #[serde(default)]
+    skins: HashMap<String, SkinDefinition>,
+    #[serde(default)]
+    players: HashMap<String, String>,
+}
+
+#[derive(Default)]
+struct LoaderRuntime {
+    loaded_models: HashMap<String, i32>,
+    failed_profiles: HashSet<String>,
+}
+
+// The configuration is parsed before the hook is enabled. Runtime state is
+// accessed only from GTA's frame thread.
+static SAMP_BASE: OnceLock<usize> = OnceLock::new();
+static SKIN_CONFIG: OnceLock<SkinConfig> = OnceLock::new();
+static LOADER_RUNTIME: OnceLock<Mutex<LoaderRuntime>> = OnceLock::new();
 static GAME_PROCESS_HOOK: OnceLock<GenericDetour<GameProcessFn>> = OnceLock::new();
-static mut LOADER_STATE: LoaderState = LoaderState::WaitingForAssets;
 
 unsafe fn read_mem<T: Copy>(address: usize) -> T {
     unsafe { *(address as *const T) }
@@ -141,8 +147,8 @@ unsafe fn set_ped_model_clump(model_info: *mut c_void, clump: *mut c_void) {
     unsafe { function(model_info, clump) };
 }
 
-unsafe fn load_dff_clump(txd_slot: i32) -> Option<*mut c_void> {
-    let dff_path = CString::new(DFF_PATH).expect("DFF path contains a NUL byte");
+unsafe fn load_dff_clump(txd_slot: i32, dff_path: &str) -> Option<*mut c_void> {
+    let dff_path = CString::new(dff_path).expect("DFF path contains a NUL byte");
 
     // DFF material texture names are resolved against the current TXD.
     unsafe { call_cdecl_0::<()>(ADDR_CTXDSTORE_PUSHCURRENTTXD) };
@@ -159,7 +165,7 @@ unsafe fn load_dff_clump(txd_slot: i32) -> Option<*mut c_void> {
 
     if stream.is_null() {
         unsafe { call_cdecl_0::<()>(ADDR_CTXDSTORE_POPCURRENTTXD) };
-        log::error!("could not open DFF: {DFF_PATH}");
+        log::error!("could not open DFF");
         return None;
     }
 
@@ -176,7 +182,7 @@ unsafe fn load_dff_clump(txd_slot: i32) -> Option<*mut c_void> {
     };
 
     let clump: *mut c_void = if has_clump.is_null() {
-        log::error!("DFF does not contain a RenderWare clump: {DFF_PATH}");
+        log::error!("DFF does not contain a RenderWare clump");
         std::ptr::null_mut()
     } else {
         unsafe { call_cdecl_1(ADDR_RPCLUMPSTREAMREAD, stream) }
@@ -191,10 +197,13 @@ unsafe fn load_dff_clump(txd_slot: i32) -> Option<*mut c_void> {
     (!clump.is_null()).then_some(clump)
 }
 
-/// Loads a loose TXD/DFF pair into a private ped slot cloned from a vanilla ped.
-unsafe fn load_custom_skin() -> Option<i32> {
-    let txd_name = CString::new("custom_skin_loader_txd").unwrap();
-    let txd_path = CString::new(TXD_PATH).expect("TXD path contains a NUL byte");
+/// Loads one configured TXD/DFF pair into a private ped slot cloned from its
+/// configured vanilla donor model.
+unsafe fn load_custom_skin(skin_id: &str, definition: &SkinDefinition) -> Option<i32> {
+    let model_id = unsafe { find_free_model_id()? };
+    let txd_name = CString::new(format!("csl_{model_id}")).unwrap();
+    let txd_path =
+        CString::new(definition.txd_path.as_str()).expect("TXD path contains a NUL byte");
 
     let txd_slot: i32 = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_TXD_SLOT, txd_name.as_ptr()) };
     if txd_slot < 0 {
@@ -204,18 +213,20 @@ unsafe fn load_custom_skin() -> Option<i32> {
 
     let loaded: u8 = unsafe { call_cdecl_2(ADDR_CTXDSTORE_LOAD_TXD, txd_slot, txd_path.as_ptr()) };
     if loaded == 0 {
-        log::error!("could not load TXD: {TXD_PATH}");
+        log::error!("could not load TXD for skin {skin_id}");
         return None;
     }
     let _: *mut c_void = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_REF, txd_slot) };
 
-    let donor_model_info = unsafe { get_model_info(DONOR_PED_MODEL_ID) };
+    let donor_model_info = unsafe { get_model_info(definition.donor_model_id) };
     if donor_model_info.is_null() {
-        log::error!("GTA donor ped model {DONOR_PED_MODEL_ID} is not available");
+        log::error!(
+            "GTA donor ped model {} is not available for skin {skin_id}",
+            definition.donor_model_id
+        );
         return None;
     }
 
-    let model_id = unsafe { find_free_model_id()? };
     let model_info: *mut c_void = unsafe { call_cdecl_1(ADDR_CMODELINFO_ADD_PED_MODEL, model_id) };
     if model_info.is_null() {
         log::error!("CModelInfo::AddPedModel({model_id}) failed");
@@ -224,12 +235,13 @@ unsafe fn load_custom_skin() -> Option<i32> {
 
     unsafe { clone_ped_model_metadata(model_info, donor_model_info, txd_slot) };
 
-    let clump = unsafe { load_dff_clump(txd_slot)? };
+    let clump = unsafe { load_dff_clump(txd_slot, &definition.dff_path)? };
     // This does ped-specific clump setup; never write m_pRwClump directly.
     unsafe { set_ped_model_clump(model_info, clump) };
 
     log::info!(
-        "custom skin loaded: private model={model_id}, donor={DONOR_PED_MODEL_ID}, txd_slot={txd_slot}",
+        "loaded skin {skin_id}: private model={model_id}, donor={}, txd_slot={txd_slot}",
+        definition.donor_model_id
     );
     Some(model_id)
 }
@@ -260,11 +272,7 @@ unsafe fn clone_ped_model_metadata(destination: *mut c_void, donor: *mut c_void,
     }
 }
 
-unsafe fn find_remote_gta_ped(samp_base: usize, player_id: usize) -> Option<*mut c_void> {
-    if player_id >= SAMP_MAX_PLAYERS {
-        return None;
-    }
-
+unsafe fn get_player_pool(samp_base: usize) -> Option<usize> {
     let samp: usize = unsafe { read_mem(samp_base + SAMP_OFFSET_SAMP_INFO) };
     if samp == 0 {
         return None;
@@ -280,12 +288,10 @@ unsafe fn find_remote_gta_ped(samp_base: usize, player_id: usize) -> Option<*mut
         return None;
     }
 
-    let remote: usize =
-        unsafe { read_mem(player_pool + PLAYER_POOL_REMOTE_PLAYERS + player_id * 4) };
-    if remote == 0 {
-        return None;
-    }
+    Some(player_pool)
+}
 
+unsafe fn remote_gta_ped(remote: usize) -> Option<*mut c_void> {
     let remote_data: usize = unsafe { read_mem(remote + REMOTE_PLAYER_DATA) };
     if remote_data == 0 {
         return None;
@@ -300,10 +306,60 @@ unsafe fn find_remote_gta_ped(samp_base: usize, player_id: usize) -> Option<*mut
     (!gta_ped.is_null()).then_some(gta_ped)
 }
 
-unsafe fn find_local_gta_ped() -> Option<*mut c_void> {
-    // FindPlayerPed(-1) selects GTA's active local player.
-    let ped: *mut c_void = unsafe { call_cdecl_1(ADDR_FIND_PLAYER_PED, -1_i32) };
-    (!ped.is_null()).then_some(ped)
+/// Reads stRemotePlayer::strPlayerName (an MSVC x86 std::string) without
+/// assuming the remote-player struct itself is a C string.
+unsafe fn remote_player_name(remote: usize) -> Option<String> {
+    let length: usize = unsafe { read_mem(remote + REMOTE_PLAYER_NAME_LENGTH) };
+    let capacity: usize = unsafe { read_mem(remote + REMOTE_PLAYER_NAME_CAPACITY) };
+    if length == 0 || length > 24 || capacity < length {
+        return None;
+    }
+
+    let text_ptr: *const u8 = if capacity <= MSVC_STRING_SSO_CAPACITY {
+        (remote + REMOTE_PLAYER_NAME) as *const u8
+    } else {
+        unsafe { read_mem(remote + REMOTE_PLAYER_NAME) }
+    };
+    if text_ptr.is_null() {
+        return None;
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(text_ptr, length) };
+    std::str::from_utf8(bytes).ok().map(str::to_owned)
+}
+
+unsafe fn configured_remote_peds(
+    samp_base: usize,
+    config: &SkinConfig,
+) -> Vec<(String, *mut c_void)> {
+    let Some(player_pool) = (unsafe { get_player_pool(samp_base) }) else {
+        return Vec::new();
+    };
+
+    let max_player_id: u32 = unsafe { read_mem(player_pool) };
+    let max_player_id = (max_player_id as usize).min(SAMP_MAX_PLAYERS - 1);
+    let mut matches = Vec::new();
+
+    for player_id in 0..=max_player_id {
+        let remote: usize =
+            unsafe { read_mem(player_pool + PLAYER_POOL_REMOTE_PLAYERS + player_id * 4) };
+        if remote == 0 {
+            continue;
+        }
+
+        let Some(name) = (unsafe { remote_player_name(remote) }) else {
+            continue;
+        };
+        if !config.players.contains_key(&name) {
+            continue;
+        }
+
+        if let Some(ped) = unsafe { remote_gta_ped(remote) } {
+            matches.push((name, ped));
+        }
+    }
+
+    matches
 }
 
 unsafe fn ped_model_id(ped: *mut c_void) -> i16 {
@@ -337,42 +393,89 @@ unsafe fn find_free_model_id() -> Option<i32> {
     None
 }
 
-unsafe fn process_skin_loader_on_game_thread() {
-    let model_id = unsafe {
-        match LOADER_STATE {
-            LoaderState::WaitingForAssets => match load_custom_skin() {
-                Some(model_id) => {
-                    LOADER_STATE = LoaderState::Ready(model_id);
-                    model_id
-                }
-                None => {
-                    LOADER_STATE = LoaderState::Failed;
-                    log::error!("custom skin initialization failed; not retrying this session");
-                    return;
-                }
-            },
-            LoaderState::Ready(model_id) => model_id,
-            LoaderState::Failed => return,
+fn load_skin_config() -> Result<SkinConfig, String> {
+    let text = match fs::read_to_string(CONFIG_PATH) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::write(CONFIG_PATH, "{}\n")
+                .map_err(|error| format!("could not create {CONFIG_PATH}: {error}"))?;
+            log::info!("created empty {CONFIG_PATH}");
+            return Ok(SkinConfig::default());
         }
+        Err(error) => return Err(format!("could not read {CONFIG_PATH}: {error}")),
     };
+    let config: SkinConfig =
+        serde_json::from_str(&text).map_err(|error| format!("invalid {CONFIG_PATH}: {error}"))?;
 
-    let target_ped = if APPLY_TO_LOCAL_PLAYER {
-        unsafe { find_local_gta_ped() }
-    } else {
-        let samp_base = SAMP_BASE.load(Ordering::Acquire);
-        if samp_base == 0 {
+    for (skin_id, definition) in &config.skins {
+        if definition.txd_path.is_empty() || definition.dff_path.is_empty() {
+            return Err(format!("skin {skin_id} has an empty asset path"));
+        }
+        if !(0..20_000).contains(&definition.donor_model_id) {
+            return Err(format!(
+                "skin {skin_id} has invalid donor_model_id {}",
+                definition.donor_model_id
+            ));
+        }
+    }
+
+    for (player_name, skin_id) in &config.players {
+        if !config.skins.contains_key(skin_id) {
+            return Err(format!(
+                "player {player_name} references unknown skin {skin_id}"
+            ));
+        }
+    }
+
+    Ok(config)
+}
+
+unsafe fn model_for_skin(skin_id: &str, definition: &SkinDefinition) -> Option<i32> {
+    let runtime = LOADER_RUNTIME.get_or_init(|| Mutex::new(LoaderRuntime::default()));
+    {
+        let state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(model_id) = state.loaded_models.get(skin_id) {
+            return Some(*model_id);
+        }
+        if state.failed_profiles.contains(skin_id) {
+            return None;
+        }
+    }
+
+    let model_id = unsafe { load_custom_skin(skin_id, definition) };
+    let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+    match model_id {
+        Some(model_id) => {
+            state.loaded_models.insert(skin_id.to_owned(), model_id);
+            Some(model_id)
+        }
+        None => {
+            state.failed_profiles.insert(skin_id.to_owned());
             None
-        } else {
-            unsafe { find_remote_gta_ped(samp_base, TARGET_PLAYER_ID) }
         }
+    }
+}
+
+unsafe fn process_skin_loader_on_game_thread() {
+    let Some(config) = SKIN_CONFIG.get() else {
+        return;
+    };
+    let Some(&samp_base) = SAMP_BASE.get() else {
+        return;
     };
 
-    if let Some(ped) = target_ped {
+    for (name, ped) in unsafe { configured_remote_peds(samp_base, config) } {
+        let skin_id = &config.players[&name];
+        let definition = &config.skins[skin_id];
+        let Some(model_id) = (unsafe { model_for_skin(skin_id, definition) }) else {
+            continue;
+        };
+
         // SA-MP can reset a ped while it remains streamed in. Reapply only
         // after that happens, rather than calling SetModelIndex every frame.
         if unsafe { ped_model_id(ped) } != model_id as i16 {
             unsafe { set_ped_model_index(ped, model_id) };
-            log::debug!("reapplied custom model {model_id}");
+            log::debug!("applied custom model {model_id} to {name}");
         }
     }
 }
@@ -407,16 +510,33 @@ fn plugin_thread() {
         thread::sleep(Duration::from_millis(100));
     }
 
-    if !APPLY_TO_LOCAL_PLAYER {
-        let samp_base = loop {
-            let module = unsafe { GetModuleHandleA(b"samp.dll\0".as_ptr()) };
-            if module != 0 {
-                break module as usize;
-            }
-            thread::sleep(Duration::from_millis(500));
-        };
-        SAMP_BASE.store(samp_base, Ordering::Release);
+    let config = match load_skin_config() {
+        Ok(config) => config,
+        Err(error) => {
+            log::error!("{error}");
+            return;
+        }
+    };
+    let skin_count = config.skins.len();
+    let player_count = config.players.len();
+    if player_count == 0 {
+        log::info!("{CONFIG_PATH} has no player mappings; loader is idle");
+        return;
     }
+    SKIN_CONFIG
+        .set(config)
+        .expect("skin configuration was initialized twice");
+
+    let samp_base = loop {
+        let module = unsafe { GetModuleHandleA(b"samp.dll\0".as_ptr()) };
+        if module != 0 {
+            break module as usize;
+        }
+        thread::sleep(Duration::from_millis(500));
+    };
+    SAMP_BASE
+        .set(samp_base)
+        .expect("SA-MP base was initialized twice");
 
     while !unsafe { is_gta_ready() } {
         thread::sleep(Duration::from_millis(100));
@@ -427,11 +547,7 @@ fn plugin_thread() {
         return;
     }
 
-    if APPLY_TO_LOCAL_PLAYER {
-        log::info!("testing custom skin on the local player");
-    } else {
-        log::info!("watching SA-MP player ID {TARGET_PLAYER_ID}");
-    }
+    log::info!("watching {player_count} configured player(s) across {skin_count} skin(s)");
 }
 
 /*
