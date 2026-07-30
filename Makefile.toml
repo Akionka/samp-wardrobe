@@ -1,0 +1,21 @@
+[tasks.build-asi]
+command = "cargo"
+args = ["build", "--release"]
+
+[tasks.build-asi-debug]
+command = "cargo"
+args = ["build"]
+
+[tasks.deploy]
+dependencies = ["build-asi"]
+script = [
+    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/release/custom_skin_loader.dll C:/Games/GTASA/custom_skin_loader.asi\"",
+    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/release/custom_skin_loader.pdb C:/Games/GTASA/custom_skin_loader.pdb\"",
+]
+
+[tasks.debug]
+dependencies = ["build-asi-debug"]
+script = [
+    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/custom_skin_loader.dll C:/Games/GTASA/custom_skin_loader.asi\"",
+    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/custom_skin_loader.pdb C:/Games/GTASA/custom_skin_loader.pdb\"",
+]

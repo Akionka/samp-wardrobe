@@ -1,0 +1,18 @@
+[package]
+name = "custom_skin_loader"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+log = "0.4.33"
+retour = "0.4.0-alpha.4"
+simplelog = "0.12.2"
+winapi = { version = "0.3.9", features = ["debugapi"] }
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_SystemServices",
+    "Win32_System_LibraryLoader",
+] }

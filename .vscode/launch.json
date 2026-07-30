@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Game",
+            "type": "lldb", // Или "lldb"
+            "request": "launch",
+            "program": "C:/Games/GTASA/gta_sa.exe",
+            "cwd": "C:/Games/GTASA/",
+            "stopAtEntry": false
+        },
+        {
+            "name": "Attach to Game",
+            "type": "lldb",
+            "request": "attach",
+            "program": "C:/Games/GTASA/gta_sa.exe",
+            "sourceLanguages": [
+                "rust"
+            ]
+        }
+    ]
+}
