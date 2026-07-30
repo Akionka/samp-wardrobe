@@ -6,7 +6,7 @@ use std::ffi::{CString, c_void};
 use std::fs::{self, File};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::HMODULE;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows_sys::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
@@ -67,6 +67,7 @@ const RW_ID_CLUMP: u32 = 0x10;
 const PRIVATE_MODEL_ID_START: i32 = 18_000;
 const PRIVATE_MODEL_ID_END: i32 = 20_000;
 const CONFIG_PATH: &str = "skins.json";
+const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 type GameProcessFn = unsafe extern "cdecl" fn();
 
@@ -89,6 +90,7 @@ struct SkinConfig {
 struct LoaderRuntime {
     loaded_models: HashMap<String, i32>,
     failed_profiles: HashSet<String>,
+    last_poll: Option<Instant>,
 }
 
 // The configuration is parsed before the hook is enabled. Runtime state is
@@ -457,6 +459,22 @@ unsafe fn model_for_skin(skin_id: &str, definition: &SkinDefinition) -> Option<i
 }
 
 unsafe fn process_skin_loader_on_game_thread() {
+    // The hook runs every GTA frame, but scanning a 1004-slot SA-MP pool does
+    // not need to. Five polls per second keeps skin changes responsive without
+    // doing the full scan on every frame.
+    let runtime = LOADER_RUNTIME.get_or_init(|| Mutex::new(LoaderRuntime::default()));
+    {
+        let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        let now = Instant::now();
+        if state
+            .last_poll
+            .is_some_and(|last_poll| now.duration_since(last_poll) < POLL_INTERVAL)
+        {
+            return;
+        }
+        state.last_poll = Some(now);
+    }
+
     let Some(config) = SKIN_CONFIG.get() else {
         return;
     };

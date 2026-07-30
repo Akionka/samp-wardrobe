@@ -4,7 +4,7 @@
 
 - [ ] Validate the `skins` + `players` JSON schema in-game with a real streamed
   player. Confirm one skin can be assigned to multiple player names.
-- [ ] Throttle polling. The current game-thread pass can scan up to 1004 SA-MP
+- [x] Throttle polling. The current game-thread pass can scan up to 1004 SA-MP
   slots per frame; run it roughly every 200 ms while still reapplying a custom
   model as soon as the next poll observes a server-side skin reset.
 - [ ] Add clear diagnostic logging for player-name matches, skin IDs, private
