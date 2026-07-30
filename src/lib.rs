@@ -11,6 +11,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows_sys::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 
 // GTA SA 1.0 US (Hoodlum), 32-bit only.
+const ADDR_CMODELINFO_ADD_PED_MODEL: usize = 0x4C67A0;
 const ADDR_MS_P_TXD_POOL: usize = 0xC8800C;
 const ADDR_MS_MODEL_INFO_PTRS: usize = 0xA9B0C8; // CBaseModelInfo* [20000]
 
@@ -47,6 +48,11 @@ const SAMP_MAX_PLAYERS: usize = 1004;
 
 // CBaseModelInfo and CEntity offsets in GTA SA 1.0 US.
 const MODEL_INFO_TXD_INDEX: usize = 0x0A;
+const MODEL_INFO_FLAGS: usize = 0x12;
+const MODEL_INFO_RW_OBJECT: usize = 0x1C;
+const MODEL_INFO_COPY_START: usize = 0x0C;
+const PED_MODEL_INFO_SIZE: usize = 0x44;
+const MODEL_FLAG_OWNS_COLLISION: u16 = 1 << 5;
 const ENTITY_MODEL_INDEX: usize = 0x22;
 
 // RenderWare enums/chunk ID.
@@ -58,10 +64,11 @@ const RW_ID_CLUMP: u32 = 0x10;
 // false to target TARGET_PLAYER_ID instead.
 const APPLY_TO_LOCAL_PLAYER: bool = true;
 
-// The custom clump replaces this existing GTA ped slot. Reusing an initialized
-// slot preserves the ped's animation/collision metadata; dynamically adding a
-// CPedModelInfo left that metadata incomplete and crashed on SetModelIndex.
-const CUSTOM_PED_MODEL_ID: i32 = 7;
+// Metadata is cloned from this initialized vanilla ped. The resulting custom
+// model uses a private, currently unused model ID and does not replace slot 7.
+const DONOR_PED_MODEL_ID: i32 = 7;
+const PRIVATE_MODEL_ID_START: i32 = 18_000;
+const PRIVATE_MODEL_ID_END: i32 = 20_000;
 
 // Change this to the SA-MP ID of the player whose skin you want to override.
 // ID-based lookup is intentional for now: stRemotePlayer::strPlayerName is a
@@ -184,7 +191,7 @@ unsafe fn load_dff_clump(txd_slot: i32) -> Option<*mut c_void> {
     (!clump.is_null()).then_some(clump)
 }
 
-/// Loads a loose TXD/DFF pair into an existing, initialized GTA ped model slot.
+/// Loads a loose TXD/DFF pair into a private ped slot cloned from a vanilla ped.
 unsafe fn load_custom_skin() -> Option<i32> {
     let txd_name = CString::new("custom_skin_loader_txd").unwrap();
     let txd_path = CString::new(TXD_PATH).expect("TXD path contains a NUL byte");
@@ -202,24 +209,55 @@ unsafe fn load_custom_skin() -> Option<i32> {
     }
     let _: *mut c_void = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_REF, txd_slot) };
 
-    let model_info: *mut c_void = unsafe { get_model_info(CUSTOM_PED_MODEL_ID) };
-    if model_info.is_null() {
-        log::error!("GTA ped model {} is not available", CUSTOM_PED_MODEL_ID);
+    let donor_model_info = unsafe { get_model_info(DONOR_PED_MODEL_ID) };
+    if donor_model_info.is_null() {
+        log::error!("GTA donor ped model {DONOR_PED_MODEL_ID} is not available");
         return None;
     }
 
-    // CBaseModelInfo::m_nTxdIndex is a signed short at +0x0A.
-    unsafe { *((model_info as usize + MODEL_INFO_TXD_INDEX) as *mut i16) = txd_slot as i16 };
+    let model_id = unsafe { find_free_model_id()? };
+    let model_info: *mut c_void = unsafe { call_cdecl_1(ADDR_CMODELINFO_ADD_PED_MODEL, model_id) };
+    if model_info.is_null() {
+        log::error!("CModelInfo::AddPedModel({model_id}) failed");
+        return None;
+    }
+
+    unsafe { clone_ped_model_metadata(model_info, donor_model_info, txd_slot) };
 
     let clump = unsafe { load_dff_clump(txd_slot)? };
     // This does ped-specific clump setup; never write m_pRwClump directly.
     unsafe { set_ped_model_clump(model_info, clump) };
 
     log::info!(
-        "custom skin loaded into existing ped slot: model={}, txd_slot={txd_slot}",
-        CUSTOM_PED_MODEL_ID
+        "custom skin loaded: private model={model_id}, donor={DONOR_PED_MODEL_ID}, txd_slot={txd_slot}",
     );
-    Some(CUSTOM_PED_MODEL_ID)
+    Some(model_id)
+}
+
+/// Copies the safe, initialized portion of a vanilla CPedModelInfo into a new
+/// slot. The new entry keeps its constructor-provided vtable/key/refcount, has
+/// no borrowed RenderWare clump, and never claims ownership of the donor's
+/// shared collision model.
+unsafe fn clone_ped_model_metadata(destination: *mut c_void, donor: *mut c_void, txd_slot: i32) {
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            (donor as *const u8).add(MODEL_INFO_COPY_START),
+            (destination as *mut u8).add(MODEL_INFO_COPY_START),
+            PED_MODEL_INFO_SIZE - MODEL_INFO_COPY_START,
+        );
+
+        // The source model's clump belongs to the donor. SetClump below owns
+        // the newly loaded custom clump instead.
+        *((destination as usize + MODEL_INFO_RW_OBJECT) as *mut *mut c_void) = std::ptr::null_mut();
+
+        // The copied collision model is shared with the donor; a private model
+        // must not free it during GTA shutdown.
+        let flags = (destination as usize + MODEL_INFO_FLAGS) as *mut u16;
+        *flags &= !MODEL_FLAG_OWNS_COLLISION;
+
+        // CBaseModelInfo::m_nTxdIndex is a signed short at +0x0A.
+        *((destination as usize + MODEL_INFO_TXD_INDEX) as *mut i16) = txd_slot as i16;
+    }
 }
 
 unsafe fn find_remote_gta_ped(samp_base: usize, player_id: usize) -> Option<*mut c_void> {
@@ -283,6 +321,20 @@ unsafe fn get_model_info(model_id: i32) -> *mut c_void {
 
     let model_infos = ADDR_MS_MODEL_INFO_PTRS as *const *mut c_void;
     unsafe { *model_infos.add(model_id as usize) }
+}
+
+unsafe fn find_free_model_id() -> Option<i32> {
+    let model_infos = ADDR_MS_MODEL_INFO_PTRS as *const *mut c_void;
+    for model_id in PRIVATE_MODEL_ID_START..PRIVATE_MODEL_ID_END {
+        if unsafe { *model_infos.add(model_id as usize) }.is_null() {
+            return Some(model_id);
+        }
+    }
+
+    log::error!(
+        "no private model ID available in {PRIVATE_MODEL_ID_START}..{PRIVATE_MODEL_ID_END}"
+    );
+    None
 }
 
 unsafe fn process_skin_loader_on_game_thread() {

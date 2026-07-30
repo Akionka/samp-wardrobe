@@ -14,14 +14,11 @@ The custom TXD/DFF loading path works. RenderWare and ped-model operations run
 from GTA's frame thread, avoiding crashes caused by invoking GTA engine code
 from a background thread.
 
-For the current test build, the custom model replaces GTA ped model slot `7`
-on this client. This is a temporary implementation detail: every ped using
-model `7` will display the custom model locally. It does not alter server state
-or other clients.
-
-The next planned step is allocating a private model ID initialized from a
-properly cloned ped-model definition, so only selected SA-MP players receive a
-custom appearance.
+The loader creates a private, unused GTA model ID and initializes it from a
+vanilla ped-model definition before attaching the custom clump. This avoids
+globally replacing the donor skin and lets the plugin assign the custom model
+only to selected peds on this client. It does not alter server state or other
+clients.
 
 ## Requirements
 
@@ -65,8 +62,8 @@ The main settings are near the top of `src/lib.rs`:
 
 - `APPLY_TO_LOCAL_PLAYER`: keep `true` while testing the local player.
 - `TARGET_PLAYER_ID`: SA-MP player ID used when local-player mode is `false`.
-- `CUSTOM_PED_MODEL_ID`: the GTA model slot currently replaced by the custom
-  skin (currently `7`).
+- `DONOR_PED_MODEL_ID`: the initialized GTA ped model whose metadata is cloned
+  for each private custom-model slot (currently `7`).
 - `TXD_PATH` and `DFF_PATH`: relative paths to the skin assets.
 
 ## Logs
@@ -75,8 +72,8 @@ The plugin writes `custom_skin_loader.log` in GTA's working directory. A
 successful initialization includes messages like:
 
 ```text
-custom skin loaded into existing ped slot: model=7, txd_slot=...
-reapplied custom model 7
+custom skin loaded: private model=..., donor=7, txd_slot=...
+reapplied custom model ...
 ```
 
 ## Safety notes
