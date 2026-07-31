@@ -222,6 +222,20 @@ fn parse(text: &str) -> Result<SkinConfig, String> {
     Ok(config)
 }
 
+fn file_revision(path: &str) -> FileRevision {
+    match fs::metadata(path) {
+        Ok(metadata) => match metadata.modified() {
+            Ok(modified) => FileRevision::Present {
+                modified,
+                length: metadata.len(),
+            },
+            Err(error) => FileRevision::Unreadable(error.to_string()),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => FileRevision::Missing,
+        Err(error) => FileRevision::Unreadable(error.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,19 +321,5 @@ mod tests {
                 .profile_id,
             "player"
         );
-    }
-}
-
-fn file_revision(path: &str) -> FileRevision {
-    match fs::metadata(path) {
-        Ok(metadata) => match metadata.modified() {
-            Ok(modified) => FileRevision::Present {
-                modified,
-                length: metadata.len(),
-            },
-            Err(error) => FileRevision::Unreadable(error.to_string()),
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => FileRevision::Missing,
-        Err(error) => FileRevision::Unreadable(error.to_string()),
     }
 }

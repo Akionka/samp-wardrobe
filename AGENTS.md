@@ -37,7 +37,8 @@ The configured Cargo target is `i686-pc-windows-msvc`.
 
 - `cargo test` runs the Rust unit tests.
 - `cargo fmt --check` verifies formatting; use `cargo fmt` to apply it.
-- `cargo clippy --all-targets` reports Rust lint warnings.
+- `cargo clippy --all-targets --all-features -- -D warnings` runs Clippy for
+  every target and feature, treating warnings as errors.
 - `cargo make debug` builds the debug ASI and copies `wardrobe.asi` plus its
   PDB to `$env:GTA_DIR`; debug builds wait for a debugger.
 - `cargo make deploy` builds and copies the release ASI.

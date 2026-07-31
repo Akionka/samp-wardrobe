@@ -79,10 +79,11 @@ impl SkinManager {
             .get(skin_id)
             .is_some_and(|last_check| now.duration_since(*last_check) < ASSET_RELOAD_INTERVAL);
 
-        if let Some(loaded) = loaded_model {
-            if loaded.source.definition == *definition && checked_recently {
-                return Some(loaded.resources.model_id);
-            }
+        if let Some(loaded) = loaded_model
+            && loaded.source.definition == *definition
+            && checked_recently
+        {
+            return Some(loaded.resources.model_id);
         }
 
         // A failed load is retried only after the asset check interval, unless
@@ -99,10 +100,10 @@ impl SkinManager {
 
         let source = skin_source_revision(definition);
         self.last_asset_check.insert(skin_id.to_owned(), now);
-        if let Some(loaded) = self.loaded_models.get(skin_id) {
-            if loaded.source == source {
-                return Some(loaded.resources.model_id);
-            }
+        if let Some(loaded) = self.loaded_models.get(skin_id)
+            && loaded.source == source
+        {
+            return Some(loaded.resources.model_id);
         }
         if self.failed_profiles.get(skin_id) == Some(&source) {
             return self
