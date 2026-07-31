@@ -41,9 +41,13 @@
 
 ## Compatibility and safety
 
-- [ ] Verify the GTA executable and SA-MP client revision before installing
-  hooks or reading SA-MP structures. Log a clear unsupported-version error
-  instead of risking an invalid memory access.
+- [x] Detect the supported SA-MP client revision before reading its player
+  structures. Select the matching layout for 0.3.7-R1, 0.3.7-R3-1, 0.3.7-R4,
+  or 0.3.DL-R1, and log a clear unsupported-version error for every other
+  build.
+- [ ] Verify the GTA executable before installing hooks or reading GTA
+  structures. Log a clear unsupported-version error instead of risking an
+  invalid memory access.
 - [ ] Review compatibility with Fastman92 Limit Adjuster and other common ASI
   plugins, especially model-info pointer handling and private model ID limits.
 - [x] Prune applied and matched player state after a complete SA-MP scan when
@@ -59,6 +63,9 @@
   target bytes before patching; allow SAMPFUNCS to observe RPCs upstream, skip
   both hooks when a target has already been changed, and keep polling active
   in every case.
+- [ ] Research and smoke-test exact event-hook signatures for 0.3.7-R3-1,
+  0.3.7-R4, and 0.3.DL-R1 before extending direct hooks beyond R1. Keep the
+  existing polling fallback as the default safety net.
 - [ ] Smoke-test the guarded hook path on a clean SA-MP 0.3.7-R1 install
   without SAMPFUNCS, including a remote spawn and a server-issued skin reset.
 - [ ] Optionally add a SAMPFUNCS integration through a thin C++ bridge if its

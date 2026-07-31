@@ -42,8 +42,14 @@ fn plugin_thread() {
         config::CONFIG_PATH
     );
 
-    let samp = samp::Samp::wait_for_load();
-    log::info!("found samp.dll at 0x{:08X}", samp.base());
+    let samp = match samp::Samp::wait_for_load() {
+        Ok(samp) => samp,
+        Err(error) => {
+            log::error!("{error}");
+            return;
+        }
+    };
+    log::info!("found {} at 0x{:08X}", samp.version().name(), samp.base());
 
     while !unsafe { gta::is_ready() } {
         thread::sleep(Duration::from_millis(100));

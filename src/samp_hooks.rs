@@ -1,5 +1,5 @@
 use crate::memory;
-use crate::samp::Samp;
+use crate::samp::{Samp, SampVersion};
 use retour::{GenericDetour, RawDetour};
 use std::ffi::c_void;
 use std::sync::OnceLock;
@@ -35,6 +35,13 @@ const SET_PLAYER_SKIN_REFRESH: u8 = 1 << 1;
 static REFRESH_REASONS: AtomicU8 = AtomicU8::new(0);
 
 pub unsafe fn install(samp: &Samp) -> Result<(), String> {
+    if samp.version() != SampVersion::V037R1 {
+        return Err(format!(
+            "guarded event-hook signatures are currently verified only for SA-MP 0.3.7-R1; {} will use polling",
+            samp.version().name()
+        ));
+    }
+
     let version_marker_address = samp
         .base()
         .checked_add(R1_VERSION_MARKER_OFFSET)

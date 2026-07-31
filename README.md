@@ -10,13 +10,15 @@ not changed—only your own game sees the custom model.
 ## What you need
 
 - GTA San Andreas 1.0 US (Hoodlum)
-- SA-MP 0.3.7-R1
+- SA-MP 0.3.7-R1, 0.3.7-R3-1, 0.3.7-R4, or 0.3.DL-R1
 - An ASI loader (e.g. [Silent's ASI Loader](https://www.gtagarage.com/mods/show.php?id=21709))
 - A compatible `.txd` and `.dff` pair for every custom skin
 
-Wardrobe is version-specific. Do not use it with a different GTA executable,
-SA-MP revision, or unknown limit adjusters unless you are comfortable testing
-for crashes yourself.
+Wardrobe is version-specific. It detects the supported SA-MP builds before
+reading their player data and refuses unknown revisions. GTA executable and
+limit-adjuster compatibility still need care; do not use a different GTA
+executable or unknown limit adjusters unless you are comfortable testing for
+crashes yourself.
 
 ## Getting started
 
@@ -96,8 +98,9 @@ check after a remote player spawns or SA-MP applies a skin RPC. It checks both
 the client version marker and the exact target bytes before installing either
 hook. SAMPFUNCS may observe the same RPCs upstream without preventing these
 post-handler hooks. If another mod has already changed either target, Wardrobe
-deliberately leaves both alone and logs that it is using polling. In every mode,
-model loading and model swaps stay on GTA's frame thread.
+deliberately leaves both alone and logs that it is using polling. The other
+supported revisions currently use polling only. In every mode, model loading
+and model swaps stay on GTA's frame thread.
 
 ## Optional in-game editor
 
