@@ -1,56 +1,43 @@
 # Wardrobe
-> Wardrobe — client-side custom skins for SA-MP
 
-Wardrobe is an experimental GTA San Andreas / SA-MP ASI plugin written in
-Rust. It loads a loose `.txd` and `.dff` pair through GTA's RenderWare runtime
-and applies the model locally.
+Wardrobe lets you choose the GTA: San Andreas skins you see for yourself and
+other SA-MP players. It is made for roleplay: the server and other players are
+not changed—only your own game sees the custom model.
 
-This project currently targets GTA San Andreas 1.0 US (Hoodlum) and SA-MP
-0.3.7-R1, both as 32-bit processes. The addresses in the source are version
-specific.
+> Wardrobe is experimental. Use it only on servers where client-side cosmetic
+> modifications are allowed.
 
-## Current status
+## What you need
 
-The custom TXD/DFF loading path works. RenderWare and ped-model operations run
-from GTA's frame thread, avoiding crashes caused by invoking GTA engine code
-from a background thread. Matching rules select skin profiles by exact SA-MP
-player name, normal server model ID, or both, from `wardrobe.json`.
+- GTA San Andreas 1.0 US (Hoodlum)
+- SA-MP 0.3.7-R1
+- An ASI loader (e.g. [Silent's ASI Loader](https://www.gtagarage.com/mods/show.php?id=21709))
+- A compatible `.txd` and `.dff` pair for every custom skin
 
-The loader creates a private, unused GTA model ID and initializes it from a
-vanilla ped-model definition before attaching the custom clump. This avoids
-globally replacing the donor skin and lets the plugin assign the custom model
-only to selected peds on this client. It does not alter server state or other
-clients.
+Wardrobe is version-specific. Do not use it with a different GTA executable,
+SA-MP revision, or unknown limit adjusters unless you are comfortable testing
+for crashes yourself.
 
-## Requirements
+## Getting started
 
-- GTA San Andreas 1.0 US / Hoodlum, 32-bit
-- SA-MP 0.3.7-R1 for remote-player support
-- An ASI loader
-- Rust with the `i686-pc-windows-msvc` target
-- `cargo-make`
+1. Put `wardrobe.asi` in your GTA directory.
+2. Put your `.txd` and `.dff` files somewhere under that directory, for
+   example `models/myskin.txd` and `models/myskin.dff`.
+3. Start GTA once. Wardrobe creates an empty `wardrobe.json` beside the ASI.
+4. Either edit that JSON yourself or install the optional MoonLoader UI and
+   use `/wardrobe` in-game.
 
-## Assets
+The skin files must be GTA SA ped-compatible. Their textures must be present
+in the TXD, and the DFF needs the expected ped skeleton/frame hierarchy.
 
-Place the skin files in the GTA installation directory:
+## Configuring skins
 
-```text
-models/myskin.txd
-models/myskin.dff
-```
+`wardrobe.json` has two parts:
 
-`myskin.dff` must be a GTA SA ped-compatible RenderWare clump with the expected
-ped skeleton/frame hierarchy. Its material texture names must exist in
-`myskin.txd`.
+- **Skins** describe the files Wardrobe should load.
+- **Rules** decide who receives each skin.
 
-## Skin profiles
-
-Create `wardrobe.json` in the GTA installation directory. Start by copying
-`wardrobe.example.json` from this repository, then adjust the player name and
-paths:
-
-On first run, Wardrobe creates a missing `wardrobe.json` as an
-empty `{}` file and remains idle until you add at least one matching rule.
+Here is a complete small example:
 
 ```json
 {
@@ -77,101 +64,87 @@ empty `{}` file and remains idle until you add at least one matching rule.
 }
 ```
 
-- `skins` maps a skin ID to its asset paths and donor model ID.
-- `rules` maps a profile to one or both matching conditions:
-  `player_name` is an exact, case-sensitive SA-MP nickname, and
-  `server_model_id` is the normal GTA model ID supplied by the server.
-- Both skin profiles and rules have an `enabled` flag, which defaults to `true`
-  when omitted. Disabling a rule or its profile excludes it from matching
-  without removing the saved entry; the next matching rule, or the server model
-  when none remains, is used instead.
-- A rule must specify at least one condition. The loader resolves matches in
-  this order: player name + server model, player name only, then server model
-  only. Two rules with identical conditions are invalid.
-- `txd_path` and `dff_path` are relative to the GTA installation directory.
-- `donor_model_id` is a normal GTA ped model whose metadata is used to
-  initialize a new private slot. `7` is the currently tested default.
+Paths are relative to the GTA directory. `donor_model_id` is a normal GTA ped
+model used as a template for the custom one. It is recommended to use the ID of
+the model for which the skin was originally created.
 
-Skins are loaded only when a matching player is streamed in. Each active skin
-generation receives one private GTA model ID that every matching player shares,
-so multiple rules can use one skin without duplicating it or affecting ordinary
-game models.
+A rule can match by player name, by the server-set model ID, or by both. Player
+names are exact and case-sensitive. When multiple rules apply, Wardrobe picks
+the most specific one:
 
-Wardrobe notices saved changes to `wardrobe.json` within about one
-second. You can add profiles, enable or disable profiles and rules, change
-matching conditions, or change a profile's TXD path, DFF path, or donor while
-GTA is running. It also checks the loaded TXD and DFF files about once per
-second. A changed profile or asset is loaded into a fresh private model slot
-and every matching streamed-in ped moves to it on the next poll.
+1. Player name and server model ID
+2. Player name only
+3. Server model ID only
 
-Removing a matching rule or skin profile restores an affected streamed-in ped
-to the last normal model observed from SA-MP. Invalid JSON or a failed asset
-reload leaves the last working configuration/model active and reports the error
-in `wardrobe.log`.
+Set `enabled` to `false` on a skin or rule to keep it saved without using it.
+Removing or disabling a rule returns affected streamed-in players to the last
+normal skin Wardrobe saw from the server.
 
-After a profile is replaced or becomes unassigned, the loader waits one second
-and confirms that no live SA-MP ped still uses its old private model. It then
-destroys the retired RenderWare clump and releases its TXD slot. The empty GTA
-ped-model entry is retained and recycled by the loader, avoiding repeated
-allocation from GTA's fixed ped-model-info array. If the safe SA-MP scan is
-incomplete, cleanup is postponed rather than risking a dangling model.
+You can edit and save the JSON while GTA is running. Wardrobe notices config
+and skin-file changes within about a second and updates matching streamed-in
+players automatically.
 
-## Optional MoonLoader UI
+## Optional in-game editor
 
-`moonloader/wardrobe_ui/wardrobe_ui.lua` is an optional
-MoonLoader `mimgui` front-end for the same JSON configuration. It does not
-communicate with the Rust ASI directly: it edits `wardrobe.json`, which the
-ASI then reloads automatically. In-game, use `/wardrobe` to open the
-editor. Profile and matching-rule changes are staged until **Save JSON** is
-pressed.
+The MoonLoader editor is at `moonloader/wardrobe_ui/wardrobe_ui.lua`. It edits
+the same `wardrobe.json`; it does not need a special bridge to the ASI.
 
-Deploy the Lua script separately with:
+Copy it to `GTA_FOLDER/moonloader/`, then open it with:
+
+```text
+/wardrobe
+```
+
+Use **Save JSON** when you are happy with your changes. The editor saves
+atomically, so Wardrobe never reads a half-written file.
+
+## If something does not work
+
+Wardrobe writes `wardrobe.log` in the GTA directory. Check it first.
+
+- A missing or invalid TXD/DFF is logged and that skin is skipped. The player
+  keeps the server skin, or keeps the last successfully loaded custom skin.
+- Invalid JSON leaves the last working configuration active.
+- If no rule matches, Wardrobe leaves the player on the server-provided skin.
+
+## Building from source
+
+You need Rust with the `i686-pc-windows-msvc` target and `cargo-make` (optional).
+For the `cargo-make` deploy commands, set `GTA_DIR` once per PowerShell
+session:
+
+```powershell
+$env:GTA_DIR = 'D:\Games\GTASA'
+```
+
+Regular:
+```powershell
+cargo build --release
+```
+
+With `cargo-make` :
+```powershell
+cargo make debug
+```
+or
+```powershell
+cargo make deploy
+```
+
+This builds a debug Wardrobe ASI and copies it, together with its PDB, to the
+GTA directory stored in `GTA_DIR`.
+Debug builds wait for a debugger to attach to `gta_sa.exe`.
+
+To deploy the optional editor:
 
 ```powershell
 cargo make deploy-ui
 ```
 
-The script is installed under `moonloader/scripts/wardrobe_ui/`,
-where this installation's GitHelper discovers and auto-reloads it. Restart GTA
-or MoonLoader once after the first deployment so GitHelper adds this new script
-to its scan; subsequent Lua edits auto-reload while the game is running. Saving
-uses a temporary file and an atomic Windows replacement so the ASI never
-receives a partially written JSON document.
+## License and affiliation
 
-## Build and deploy
-
-The project is configured to build for 32-bit Windows in
-`.cargo/config.toml`.
-
-```powershell
-cargo make debug
-```
-
-The `debug` task copies the resulting ASI and PDB to the GTA directory configured
-in `Makefile.toml` (`C:/Games/GTASA` by default). Close GTA before deploying;
-Windows cannot overwrite an ASI that the running game has loaded.
-
-Debug builds wait until a debugger is attached to `gta_sa.exe`.
-
-## Logs
-
-Wardrobe writes `wardrobe.log` in GTA's working directory. A
-successful initialization includes messages like:
-
-```text
-loaded skin jacob_spencer: private model=..., donor=7, txd_slot=...
-applied custom model ... to Jacob_Spencer
-```
-
-## Safety notes
-
-Use this only where client-side cosmetic modifications are permitted. This
-plugin is experimental and relies on internal game/SA-MP structures; different
-executables, patches, limit adjusters, or incompatible DFFs can crash the game.
-
-## Affiliation and assets
-
-Wardrobe is an independent project and is not affiliated with or
-endorsed by Rockstar Games, Take-Two Interactive, or the SA-MP project. It
-contains no GTA San Andreas or SA-MP game assets. You are responsible for
-using compatible game copies and custom assets that you have the right to use.
+Wardrobe is released under the [MIT License](LICENSE). It is an independent
+project, is not affiliated with Rockstar Games, Take-Two Interactive, or the
+SA-MP project, and contains no GTA San Andreas or SA-MP assets. You are
+responsible for using game copies and custom assets that you have the right to
+use.

@@ -1,3 +1,6 @@
+[env]
+GTA_DIR = { value = "", condition = { env_not_set = ["GTA_DIR"] } }
+
 [tasks.build-asi]
 command = "cargo"
 args = ["build", "--release"]
@@ -6,21 +9,27 @@ args = ["build", "--release"]
 command = "cargo"
 args = ["build"]
 
+[tasks.require-gta-dir]
+command = "powershell"
+args = [
+    "-Command",
+    "if ([string]::IsNullOrWhiteSpace($env:GTA_DIR)) { throw 'GTA_DIR is not set. In PowerShell, run: $env:GTA_DIR = ''D:\\path\\to\\GTA''' }",
+]
+
 [tasks.deploy]
-dependencies = ["build-asi"]
+dependencies = ["require-gta-dir", "build-asi"]
 script = [
-    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/release/wardrobe.dll C:/Games/GTASA/wardrobe.asi\"",
-    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/release/wardrobe.pdb C:/Games/GTASA/wardrobe.pdb\"",
+    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/release/wardrobe.dll (Join-Path $env:GTA_DIR 'wardrobe.asi')\"",
 ]
 
 [tasks.debug]
-dependencies = ["build-asi-debug"]
+dependencies = ["require-gta-dir", "build-asi-debug"]
 script = [
-    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/wardrobe.dll C:/Games/GTASA/wardrobe.asi\"",
-    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/wardrobe.pdb C:/Games/GTASA/wardrobe.pdb\"",
+    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/wardrobe.dll (Join-Path $env:GTA_DIR 'wardrobe.asi'); Copy-Item -Force target/i686-pc-windows-msvc/debug/wardrobe.pdb (Join-Path $env:GTA_DIR 'wardrobe.pdb')\"",
 ]
 
 [tasks.deploy-ui]
+dependencies = ["require-gta-dir"]
 script = [
-    "powershell -Command \"New-Item -ItemType Directory -Force C:/Games/GTASA/moonloader/scripts/wardrobe_ui | Out-Null; Copy-Item -Force moonloader/wardrobe_ui/wardrobe_ui.lua C:/Games/GTASA/moonloader/scripts/wardrobe_ui/wardrobe_ui.lua\"",
+    "powershell -Command \"$ui_dir = Join-Path $env:GTA_DIR 'moonloader/scripts/wardrobe_ui'; New-Item -ItemType Directory -Force $ui_dir | Out-Null; Copy-Item -Force moonloader/wardrobe_ui/wardrobe_ui.lua (Join-Path $ui_dir 'wardrobe_ui.lua')\"",
 ]
