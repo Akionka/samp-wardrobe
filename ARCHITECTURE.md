@@ -117,7 +117,8 @@ refresh bits and never call the GTA bridge.
 | `SkinManager::is_private_model` | Lets Runtime distinguish Wardrobe's model from an ordinary server model. |
 | `SkinManager::model_for` | Reuses a current model, keeps a previous model after failure, or calls `gta::load_skin` for a replacement. |
 | `SkinManager::cleanup_retired` | Waits for age/liveness conditions and delegates actual teardown to `gta::release_skin_resources`. |
-| `gta::is_ready` | Confirms GTA's TXD pool exists before runtime installation. |
+| `gta::validate_executable` | Reads the supported GTA 1.0 US PE/code fingerprints before the TXD-pool wait and again before detouring `CGame::Process`; rejects unknown or patched fixed targets. |
+| `gta::is_ready` | After executable validation, confirms GTA's TXD pool exists before runtime installation. |
 | `gta::ped_model_id` / `set_ped_model_index` | Runtime's narrow read/write ped-model interface; setting is game-thread-only. |
 | `gta::load_skin` | Validates assets/donor, allocates or reuses a model and TXD slot, builds the clump, and returns a resource handle or failure. |
 | `gta::release_skin_resources` | Destroys a retired clump/TXD and leaves its model-info allocation inert for reuse. |
@@ -133,12 +134,14 @@ helpers construct and validate version-specific targets.
 ## Safety and lifecycle rules
 
 1. GTA and RenderWare mutations must occur only from the frame detour.
-2. SA-MP/GTA pointers are read through `memory` helpers; a failed scan is not
+2. Every fixed GTA/RenderWare code address is signature-checked before Wardrobe
+   can install the frame detour or invoke it.
+3. SA-MP/GTA pointers are read through `memory` helpers; a failed scan is not
    an empty scan.
-3. Invalid configuration and asset reloads do not replace a known-good state.
-4. A private model stays protected until every live ped is known not to use it
+4. Invalid configuration and asset reloads do not replace a known-good state.
+5. A private model stays protected until every live ped is known not to use it
    and its GTA resource teardown succeeds.
-5. New SA-MP versions require a distinct entry-point/layout verification and,
+6. New SA-MP versions require a distinct entry-point/layout verification and,
    for event hooks, separately verified signatures.
 
 See [core.md](core.md) for feature behavior and source-file references.

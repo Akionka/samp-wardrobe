@@ -15,10 +15,10 @@ not changed—only your own game sees the custom model.
 - A compatible `.txd` and `.dff` pair for every custom skin
 
 Wardrobe is version-specific. It detects the supported SA-MP builds before
-reading their player data and refuses unknown revisions. GTA executable and
-limit-adjuster compatibility still need care; do not use a different GTA
-executable or unknown limit adjusters unless you are comfortable testing for
-crashes yourself.
+reading their player data and refuses unknown revisions. It also checks the
+GTA 1.0 US code targets it uses before installing its frame hook. A different
+GTA executable, or an ASI that has already patched one of those targets, is
+logged as unsupported and Wardrobe stays inactive.
 
 ## Getting started
 

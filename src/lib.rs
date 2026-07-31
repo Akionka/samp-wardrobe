@@ -51,6 +51,12 @@ fn plugin_thread() {
     };
     log::info!("found {} at 0x{:08X}", samp.version().name(), samp.base());
 
+    if let Err(error) = gta::validate_executable() {
+        log::error!("{error}");
+        return;
+    }
+    log::info!("verified GTA San Andreas 1.0 US executable targets");
+
     while !unsafe { gta::is_ready() } {
         thread::sleep(Duration::from_millis(100));
     }

@@ -16,8 +16,10 @@ the detailed type and function relationships are in
 [`DllMain`](src/lib.rs) starts `plugin_thread` only on
 `DLL_PROCESS_ATTACH`.  The background thread initializes logging through
 [`logging::init`](src/logging.rs), loads the initial configuration, waits for a
-supported `samp.dll`, waits for GTA's TXD/model system, and installs the
-runtime hook with [`runtime::install`](src/runtime.rs).
+supported `samp.dll`, verifies the supported GTA 1.0 US PE/code fingerprints,
+waits for GTA's TXD/model system, and installs the runtime hook with
+[`runtime::install`](src/runtime.rs). An unknown executable or an ASI-patched
+fixed GTA target is logged and leaves Wardrobe inactive.
 
 The background thread never loads a model or changes a ped.  `runtime::install`
 detours GTA's `CGame::Process`; `game_process_detour` calls GTA's original
@@ -144,10 +146,11 @@ installation logs the reason and Wardrobe continues with normal polling.
 
 ## Failure behavior and verification
 
-The code favors continuity and safe cleanup: invalid JSON preserves the active
-configuration, bad assets preserve a previous skin where possible, incomplete
-SA-MP scans preserve player and resource state, and failed GTA teardown is
-retried.  Diagnostic output goes to `wardrobe.log` via
+The code favors continuity and safe cleanup: unsupported GTA executables or
+patched fixed targets stop before any detour or GTA call; invalid JSON preserves
+the active configuration, bad assets preserve a previous skin where possible,
+incomplete SA-MP scans preserve player and resource state, and failed GTA
+teardown is retried. Diagnostic output goes to `wardrobe.log` via
 [src/logging.rs](src/logging.rs).
 
 Unit tests next to [src/config.rs](src/config.rs), [src/samp.rs](src/samp.rs),

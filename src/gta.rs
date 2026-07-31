@@ -7,6 +7,7 @@ use std::ffi::{CString, c_void};
 use std::path::Path;
 
 // GTA SA 1.0 US (Hoodlum), 32-bit only.
+const ADDR_CGAME_PROCESS: usize = 0x53BEE0;
 const ADDR_CMODELINFO_ADD_PED_MODEL: usize = 0x4C67A0;
 const ADDR_MS_P_TXD_POOL: usize = 0xC8800C;
 const ADDR_MS_MODEL_INFO_PTRS: usize = 0xA9B0C8; // CBaseModelInfo* [20000]
@@ -52,6 +53,153 @@ const RW_ID_CLUMP: u32 = 0x10;
 // Its vtable is used to distinguish ped donors from vehicles and objects.
 const KNOWN_PED_MODEL_ID: i32 = 7;
 
+struct ExecutableSignature {
+    name: &'static str,
+    address: usize,
+    expected: &'static [u8],
+}
+
+// These signatures cover the PE header and every fixed code target used by
+// this module or Runtime. They identify the GTA SA 1.0 US executable Wardrobe
+// was written for and also reject targets another ASI has already patched.
+const EXECUTABLE_SIGNATURES: &[ExecutableSignature] = &[
+    ExecutableSignature {
+        name: "GTA SA 1.0 US PE header",
+        address: 0x0040_0080,
+        expected: &[
+            0x50, 0x45, 0x00, 0x00, 0x4C, 0x01, 0x0B, 0x00, 0xCA, 0x01, 0x71, 0x42,
+        ],
+    },
+    ExecutableSignature {
+        name: "CGame::Process",
+        address: ADDR_CGAME_PROCESS,
+        expected: &[
+            0x83, 0xEC, 0x0C, 0x53, 0x56, 0x57, 0xE8, 0xE5, 0x5E, 0x00, 0x00, 0xB9, 0x78, 0x29,
+            0xB7, 0x00,
+        ],
+    },
+    ExecutableSignature {
+        name: "CModelInfo::AddPedModel",
+        address: ADDR_CMODELINFO_ADD_PED_MODEL,
+        expected: &[
+            0xA1, 0xF8, 0x78, 0xB4, 0x00, 0x56, 0x8B, 0xF0, 0x6B, 0xF6, 0x44, 0x81, 0xC6, 0xFC,
+            0x78, 0xB4,
+        ],
+    },
+    ExecutableSignature {
+        name: "CPed::SetModelIndex",
+        address: ADDR_CPED_SET_MODEL_INDEX,
+        expected: &[
+            0x56, 0x8B, 0xF1, 0x81, 0x4E, 0x1C, 0x80, 0x00, 0x00, 0x00, 0x8B, 0x44, 0x24, 0x08,
+            0x57, 0x50,
+        ],
+    },
+    ExecutableSignature {
+        name: "CPedModelInfo::SetClump",
+        address: ADDR_CPEDMODELINFO_SETCLUMP,
+        expected: &[
+            0x56, 0x57, 0x8B, 0x7C, 0x24, 0x0C, 0x57, 0x8B, 0xF1, 0xE8, 0x22, 0xDC, 0xFF, 0xFF,
+            0x68, 0x68,
+        ],
+    },
+    ExecutableSignature {
+        name: "RwStreamOpen",
+        address: ADDR_RWSTREAMOPEN,
+        expected: &[
+            0xA1, 0x24, 0x7B, 0xC9, 0x00, 0x8B, 0x0D, 0x2C, 0x79, 0xC9, 0x00, 0x83, 0xEC, 0x20,
+            0x8B, 0x14,
+        ],
+    },
+    ExecutableSignature {
+        name: "RwStreamFindChunk",
+        address: ADDR_RWSTREAMFINDCHUNK,
+        expected: &[
+            0x83, 0xEC, 0x0C, 0x8D, 0x44, 0x24, 0x04, 0x8D, 0x4C, 0x24, 0x10, 0x8D, 0x54, 0x24,
+            0x00, 0x56,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpClumpStreamRead",
+        address: ADDR_RPCLUMPSTREAMREAD,
+        expected: &[
+            0x83, 0xEC, 0x44, 0x8D, 0x44, 0x24, 0x04, 0x8D, 0x4C, 0x24, 0x0C, 0x53, 0x55, 0x56,
+            0x57, 0x8B,
+        ],
+    },
+    ExecutableSignature {
+        name: "RwStreamClose",
+        address: ADDR_RWSTREAMCLOSE,
+        expected: &[
+            0x83, 0xEC, 0x08, 0x56, 0x8B, 0x74, 0x24, 0x10, 0x57, 0x8B, 0x06, 0x48, 0x83, 0xF8,
+            0x03, 0x0F,
+        ],
+    },
+    ExecutableSignature {
+        name: "CTxdStore::AddTxdSlot",
+        address: ADDR_CTXDSTORE_ADD_TXD_SLOT,
+        expected: &[
+            0x8B, 0x0D, 0x0C, 0x80, 0xC8, 0x00, 0x56, 0xE8, 0xF4, 0xFE, 0xFF, 0xFF, 0x8B, 0xF0,
+            0x8B, 0x44,
+        ],
+    },
+    ExecutableSignature {
+        name: "CTxdStore::LoadTxd",
+        address: ADDR_CTXDSTORE_LOAD_TXD,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x08, 0x90, 0xE9, 0xA7, 0x00, 0xCD, 0xFF, 0x50, 0x8D, 0x4C, 0x24,
+            0x04, 0x68,
+        ],
+    },
+    ExecutableSignature {
+        name: "CTxdStore::AddRef",
+        address: ADDR_CTXDSTORE_ADD_REF,
+        expected: &[
+            0x8B, 0x0D, 0x0C, 0x80, 0xC8, 0x00, 0x8B, 0x51, 0x04, 0x8B, 0x44, 0x24, 0x04, 0x80,
+            0x3C, 0x10,
+        ],
+    },
+    ExecutableSignature {
+        name: "CTxdStore::RemoveRef",
+        address: ADDR_CTXDSTORE_REMOVE_REF,
+        expected: &[
+            0xA1, 0x0C, 0x80, 0xC8, 0x00, 0x8B, 0x50, 0x04, 0x8B, 0x4C, 0x24, 0x04, 0x80, 0x3C,
+            0x11, 0x00,
+        ],
+    },
+    ExecutableSignature {
+        name: "CTxdStore::RemoveTxdSlot",
+        address: ADDR_CTXDSTORE_REMOVE_TXD_SLOT,
+        expected: &[
+            0x8B, 0x0D, 0x0C, 0x80, 0xC8, 0x00, 0x8B, 0x41, 0x04, 0x53, 0x56, 0x8B, 0x74, 0x24,
+            0x0C, 0x80,
+        ],
+    },
+    ExecutableSignature {
+        name: "CTxdStore::PushCurrentTxd",
+        address: ADDR_CTXDSTORE_PUSHCURRENTTXD,
+        expected: &[
+            0xE8, 0xEB, 0x23, 0x0C, 0x00, 0xE9, 0xCE, 0x04, 0xCD, 0xFF, 0xC3, 0x90, 0x90, 0x90,
+            0x90, 0x90,
+        ],
+    },
+    ExecutableSignature {
+        name: "CTxdStore::PopCurrentTxd",
+        address: ADDR_CTXDSTORE_POPCURRENTTXD,
+        expected: &[
+            0xA1, 0x10, 0x80, 0xC8, 0x00, 0x50, 0xE8, 0xB5, 0x23, 0x0C, 0x00, 0x83, 0xC4, 0x04,
+            0xC7, 0x05,
+        ],
+    },
+    ExecutableSignature {
+        name: "CTxdStore::SetCurrentTxd",
+        address: ADDR_CTXDSTORE_SETCURRENTTXD,
+        expected: &[
+            0x8B, 0x0D, 0x0C, 0x80, 0xC8, 0x00, 0x8B, 0x51, 0x04, 0x8B, 0x44, 0x24, 0x04, 0x80,
+            0x3C, 0x10,
+        ],
+    },
+];
+
 #[derive(Clone, Copy, Debug)]
 pub struct SkinResources {
     pub model_id: i32,
@@ -61,6 +209,36 @@ pub struct SkinResources {
 #[derive(Debug)]
 pub struct SkinLoadFailure {
     pub recyclable_model_id: Option<i32>,
+}
+
+/// Rejects every GTA executable or code-patched installation that does not
+/// match the exact 1.0 US code addresses used below. This performs only safe
+/// process-memory reads; callers must run it before creating the frame detour
+/// or invoking a fixed GTA/RenderWare address.
+pub fn validate_executable() -> Result<(), String> {
+    for signature in EXECUTABLE_SIGNATURES {
+        let actual =
+            memory::read_bytes(signature.address, signature.expected.len()).ok_or_else(|| {
+                format!(
+                    "unsupported GTA executable: could not read {} at 0x{:08X}",
+                    signature.name, signature.address
+                )
+            })?;
+        if actual != signature.expected {
+            return Err(format!(
+                "unsupported GTA executable or modified target: {} differs at 0x{:08X} (expected {}, found {})",
+                signature.name,
+                signature.address,
+                hex(signature.expected),
+                hex(&actual)
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub const fn cgame_process_address() -> usize {
+    ADDR_CGAME_PROCESS
 }
 
 pub unsafe fn is_ready() -> bool {
@@ -482,4 +660,60 @@ unsafe fn find_free_model_id() -> Option<i32> {
         "no private model ID available in {PRIVATE_MODEL_ID_START}..{PRIVATE_MODEL_ID_END}"
     );
     None
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ADDR_CGAME_PROCESS, ADDR_CMODELINFO_ADD_PED_MODEL, ADDR_CPED_SET_MODEL_INDEX,
+        ADDR_CPEDMODELINFO_SETCLUMP, ADDR_CTXDSTORE_ADD_REF, ADDR_CTXDSTORE_ADD_TXD_SLOT,
+        ADDR_CTXDSTORE_LOAD_TXD, ADDR_CTXDSTORE_POPCURRENTTXD, ADDR_CTXDSTORE_PUSHCURRENTTXD,
+        ADDR_CTXDSTORE_REMOVE_REF, ADDR_CTXDSTORE_REMOVE_TXD_SLOT, ADDR_CTXDSTORE_SETCURRENTTXD,
+        ADDR_RPCLUMPSTREAMREAD, ADDR_RWSTREAMCLOSE, ADDR_RWSTREAMFINDCHUNK, ADDR_RWSTREAMOPEN,
+        EXECUTABLE_SIGNATURES, hex,
+    };
+
+    #[test]
+    fn validates_every_fixed_gta_code_target() {
+        let targets = [
+            ADDR_CGAME_PROCESS,
+            ADDR_CMODELINFO_ADD_PED_MODEL,
+            ADDR_CPED_SET_MODEL_INDEX,
+            ADDR_CPEDMODELINFO_SETCLUMP,
+            ADDR_RWSTREAMOPEN,
+            ADDR_RWSTREAMFINDCHUNK,
+            ADDR_RPCLUMPSTREAMREAD,
+            ADDR_RWSTREAMCLOSE,
+            ADDR_CTXDSTORE_ADD_TXD_SLOT,
+            ADDR_CTXDSTORE_LOAD_TXD,
+            ADDR_CTXDSTORE_ADD_REF,
+            ADDR_CTXDSTORE_REMOVE_REF,
+            ADDR_CTXDSTORE_REMOVE_TXD_SLOT,
+            ADDR_CTXDSTORE_PUSHCURRENTTXD,
+            ADDR_CTXDSTORE_POPCURRENTTXD,
+            ADDR_CTXDSTORE_SETCURRENTTXD,
+        ];
+
+        for target in targets {
+            assert!(
+                EXECUTABLE_SIGNATURES
+                    .iter()
+                    .any(|signature| signature.address == target),
+                "missing validation signature for fixed GTA target 0x{target:08X}"
+            );
+        }
+    }
+
+    #[test]
+    fn formats_executable_mismatch_bytes_for_logs() {
+        assert_eq!(hex(&[0x90, 0xE9, 0x00]), "90 E9 00");
+    }
 }

@@ -45,11 +45,14 @@
   structures. Select the matching layout for 0.3.7-R1, 0.3.7-R3-1, 0.3.7-R4,
   or 0.3.DL-R1, and log a clear unsupported-version error for every other
   build.
-- [ ] Verify the GTA executable before installing hooks or reading GTA
-  structures. Log a clear unsupported-version error instead of risking an
-  invalid memory access.
-- [ ] Review compatibility with Fastman92 Limit Adjuster and other common ASI
-  plugins, especially model-info pointer handling and private model ID limits.
+- [x] Verify the GTA executable before waiting on GTA structures or installing
+  hooks. Require the supported 1.0 US PE fingerprint and every fixed
+  GTA/RenderWare call target to match exact bytes; log a clear error and remain
+  inactive when a target is unknown or already patched.
+- [x] Smoke-test compatibility with Fastman92 Limit Adjuster both enabled and
+  disabled. The tested configurations preserve Wardrobe's private model IDs
+  and required call targets; continue to reject any setup that patches a
+  required entry point.
 - [x] Prune applied and matched player state after a complete SA-MP scan when
   a player streams out.
 

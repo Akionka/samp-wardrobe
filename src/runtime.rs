@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const ADDR_CGAME_PROCESS: usize = 0x53BEE0;
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 type GameProcessFn = unsafe extern "cdecl" fn();
@@ -268,19 +267,25 @@ static GAME_PROCESS_HOOK: OnceLock<GenericDetour<GameProcessFn>> = OnceLock::new
 static DETOUR_ENTRY_LOGGED: AtomicBool = AtomicBool::new(false);
 static DETOUR_TRAMPOLINE_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub unsafe fn install(config: SkinConfig, samp: Samp) -> Result<(), retour::Error> {
+pub unsafe fn install(config: SkinConfig, samp: Samp) -> Result<(), String> {
+    gta::validate_executable()?;
+
+    let target_address = gta::cgame_process_address();
+    let target: GameProcessFn = unsafe { std::mem::transmute(target_address) };
+    let hook = unsafe { GenericDetour::new(target, game_process_detour as GameProcessFn) }
+        .map_err(|error| format!("could not prepare CGame::Process hook: {error}"))?;
+
     if RUNTIME.set(Mutex::new(Runtime::new(config, samp))).is_err() {
         panic!("runtime was initialized twice");
     }
 
-    let target: GameProcessFn = unsafe { std::mem::transmute(ADDR_CGAME_PROCESS) };
-    let hook = unsafe { GenericDetour::new(target, game_process_detour as GameProcessFn)? };
     GAME_PROCESS_HOOK
         .set(hook)
         .expect("CGame::Process hook was installed twice");
 
     let hook = GAME_PROCESS_HOOK.get().unwrap();
-    unsafe { hook.enable() }?;
+    unsafe { hook.enable() }
+        .map_err(|error| format!("could not enable CGame::Process hook: {error}"))?;
 
     match unsafe { samp_hooks::install(&samp) } {
         Ok(()) => log::info!("installed guarded SA-MP spawn and skin-change hooks"),
