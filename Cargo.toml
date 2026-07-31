@@ -1,9 +1,11 @@
 [package]
-name = "custom_skin_loader"
+name = "samp-wardrobe"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [lib]
+name = "wardrobe"
 crate-type = ["cdylib"]
 
 [dependencies]

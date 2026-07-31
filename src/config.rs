@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::time::{Duration, Instant, SystemTime};
 
-pub const CONFIG_PATH: &str = "custom_skin_loader.json";
+pub const CONFIG_PATH: &str = "wardrobe.json";
 const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(1);
 
 fn enabled_by_default() -> bool {

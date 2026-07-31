@@ -13,13 +13,13 @@
 
 ## Configuration and lifecycle
 
-- [x] Auto-reload `custom_skin_loader.json` without restarting GTA. New
+- [x] Auto-reload `wardrobe.json` without restarting GTA. New
   profiles and matching rules become available safely.
 - [x] Support live skin-profile replacement when its TXD path, DFF path, or
   donor model changes. Build a replacement into a fresh private model slot and
   move every assigned streamed-in ped to it on the game thread. Superseded
   resources deliberately remain alive until GTA exits.
-- [x] Detect TXD/DFF file changes even when `custom_skin_loader.json` is
+- [x] Detect TXD/DFF file changes even when `wardrobe.json` is
   unchanged. Compare modification time and file length about once per second,
   then rebuild the affected skin and move configured local/remote players to
   the replacement model.
@@ -35,7 +35,7 @@
   counts remain stable.
 - [x] Support toggling an individual matching rule or skin profile on and off.
 - [x] Preserve and document the first-run behavior: create a missing
-  `custom_skin_loader.json` as `{}` and remain idle until a matching rule exists.
+  `wardrobe.json` as `{}` and remain idle until a matching rule exists.
 - [x] Add prioritized matching rules for player names and server model IDs:
   combined rules win over player-only rules, which win over model-only rules.
 
@@ -65,7 +65,7 @@
 
 - [x] Add an optional MoonLoader (Lua) ImGui configuration UI after the
   configuration/reload workflow is stable. Keep it as a file-based front-end:
-  Lua reads and edits `custom_skin_loader.json`, while the Rust ASI continues
+  Lua reads and edits `wardrobe.json`, while the Rust ASI continues
   to own GTA model loading and observes changes through its existing reload
   path. Do not introduce Lua-to-Rust FFI for this.
 - [x] Make the MoonLoader UI save JSON atomically (write a temporary file, then

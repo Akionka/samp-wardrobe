@@ -1,4 +1,4 @@
-script_name('Custom Skin Loader UI')
+script_name('Wardrobe UI')
 script_author('Akionka')
 script_version('0.1.0')
 script_properties('work-in-pause')
@@ -7,7 +7,7 @@ local ffi = require 'ffi'
 local imgui = require 'mimgui'
 local new = imgui.new
 
-local CONFIG_PATH = getGameDirectory() .. [[\custom_skin_loader.json]]
+local CONFIG_PATH = getGameDirectory() .. [[\wardrobe.json]]
 local TEMP_CONFIG_PATH = CONFIG_PATH .. '.tmp'
 local MOVEFILE_REPLACE_EXISTING = 0x1
 local MOVEFILE_WRITE_THROUGH = 0x8
@@ -50,7 +50,7 @@ local state = {
   config = { skins = {}, rules = {} },
   window_open = new.bool(false),
   dirty = false,
-  status = 'Use /skins to open this editor.',
+  status = 'Use /wardrobe to open this editor.',
   status_is_error = false,
   selected_skin = nil,
   selected_rule = nil,
@@ -191,7 +191,7 @@ local function load_config()
   file:close()
   local ok, decoded = pcall(decodeJson, contents)
   if not ok or type(decoded) ~= 'table' then
-    set_status('Could not parse custom_skin_loader.json. Your active file was not changed.', true)
+    set_status('Could not parse wardrobe.json. Your active file was not changed.', true)
     return false
   end
 
@@ -200,7 +200,7 @@ local function load_config()
   local valid, validation_error = validate_config()
   if not valid then
     state.config = previous_config
-    set_status('Could not load custom_skin_loader.json: ' .. validation_error, true)
+    set_status('Could not load wardrobe.json: ' .. validation_error, true)
     return false
   end
   state.dirty = false
@@ -216,7 +216,7 @@ local function load_config()
   state.rule_server_model_id[0] = -1
   state.rule_enabled[0] = true
   set_buffer(state.profile_search, '')
-  set_status('Loaded custom_skin_loader.json.', false)
+  set_status('Loaded wardrobe.json.', false)
   return true
 end
 
@@ -255,7 +255,7 @@ local function save_config()
   )
   if replaced == 0 then
     os.remove(TEMP_CONFIG_PATH)
-    set_status('Could not replace custom_skin_loader.json.', true)
+    set_status('Could not replace wardrobe.json.', true)
     return false
   end
 
@@ -580,7 +580,7 @@ imgui.OnFrame(
   end,
   function()
     imgui.SetNextWindowSize(imgui.ImVec2(620, 560), imgui.Cond.FirstUseEver)
-    imgui.Begin('Custom Skin Loader', state.window_open, imgui.WindowFlags.None)
+    imgui.Begin('Wardrobe', state.window_open, imgui.WindowFlags.None)
 
     imgui.Text('Edit the loader configuration. Changes affect the game only after Save JSON.')
     if state.dirty then
@@ -612,7 +612,7 @@ function main()
   while not isSampAvailable() do wait(0) end
   load_config()
 
-  sampRegisterChatCommand('skins', function()
+  sampRegisterChatCommand('wardrobe', function()
     state.window_open[0] = not state.window_open[0]
   end)
 

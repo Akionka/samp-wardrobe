@@ -1,8 +1,9 @@
-# Custom Skin Loader
+# Wardrobe
+> Wardrobe — client-side custom skins for SA-MP
 
-An experimental GTA San Andreas / SA-MP ASI plugin written in Rust. It loads a
-loose `.txd` and `.dff` pair through GTA's RenderWare runtime and applies the
-model locally.
+Wardrobe is an experimental GTA San Andreas / SA-MP ASI plugin written in
+Rust. It loads a loose `.txd` and `.dff` pair through GTA's RenderWare runtime
+and applies the model locally.
 
 This project currently targets GTA San Andreas 1.0 US (Hoodlum) and SA-MP
 0.3.7-R1, both as 32-bit processes. The addresses in the source are version
@@ -12,8 +13,8 @@ specific.
 
 The custom TXD/DFF loading path works. RenderWare and ped-model operations run
 from GTA's frame thread, avoiding crashes caused by invoking GTA engine code
-from a background thread. Skin profiles are selected by exact SA-MP player name
-from `custom_skin_loader.json`.
+from a background thread. Matching rules select skin profiles by exact SA-MP
+player name, normal server model ID, or both, from `wardrobe.json`.
 
 The loader creates a private, unused GTA model ID and initializes it from a
 vanilla ped-model definition before attaching the custom clump. This avoids
@@ -44,11 +45,11 @@ ped skeleton/frame hierarchy. Its material texture names must exist in
 
 ## Skin profiles
 
-Create `custom_skin_loader.json` in the GTA installation directory. Start by
-copying `custom_skin_loader.example.json` from this repository, then adjust the player name and
+Create `wardrobe.json` in the GTA installation directory. Start by copying
+`wardrobe.example.json` from this repository, then adjust the player name and
 paths:
 
-On first run, the loader creates a missing `custom_skin_loader.json` as an
+On first run, Wardrobe creates a missing `wardrobe.json` as an
 empty `{}` file and remains idle until you add at least one matching rule.
 
 ```json
@@ -96,7 +97,7 @@ generation receives one private GTA model ID that every matching player shares,
 so multiple rules can use one skin without duplicating it or affecting ordinary
 game models.
 
-The loader notices saved changes to `custom_skin_loader.json` within about one
+Wardrobe notices saved changes to `wardrobe.json` within about one
 second. You can add profiles, enable or disable profiles and rules, change
 matching conditions, or change a profile's TXD path, DFF path, or donor while
 GTA is running. It also checks the loaded TXD and DFF files about once per
@@ -106,7 +107,7 @@ and every matching streamed-in ped moves to it on the next poll.
 Removing a matching rule or skin profile restores an affected streamed-in ped
 to the last normal model observed from SA-MP. Invalid JSON or a failed asset
 reload leaves the last working configuration/model active and reports the error
-in `custom_skin_loader.log`.
+in `wardrobe.log`.
 
 After a profile is replaced or becomes unassigned, the loader waits one second
 and confirms that no live SA-MP ped still uses its old private model. It then
@@ -117,10 +118,10 @@ incomplete, cleanup is postponed rather than risking a dangling model.
 
 ## Optional MoonLoader UI
 
-`moonloader/custom_skin_loader_ui/custom_skin_loader_ui.lua` is an optional
+`moonloader/wardrobe_ui/wardrobe_ui.lua` is an optional
 MoonLoader `mimgui` front-end for the same JSON configuration. It does not
-communicate with the Rust ASI directly: it edits `custom_skin_loader.json`,
-which the ASI then reloads automatically. In-game, use `/skins` to open the
+communicate with the Rust ASI directly: it edits `wardrobe.json`, which the
+ASI then reloads automatically. In-game, use `/wardrobe` to open the
 editor. Profile and matching-rule changes are staged until **Save JSON** is
 pressed.
 
@@ -130,7 +131,7 @@ Deploy the Lua script separately with:
 cargo make deploy-ui
 ```
 
-The script is installed under `moonloader/scripts/custom_skin_loader_ui/`,
+The script is installed under `moonloader/scripts/wardrobe_ui/`,
 where this installation's GitHelper discovers and auto-reloads it. Restart GTA
 or MoonLoader once after the first deployment so GitHelper adds this new script
 to its scan; subsequent Lua edits auto-reload while the game is running. Saving
@@ -154,7 +155,7 @@ Debug builds wait until a debugger is attached to `gta_sa.exe`.
 
 ## Logs
 
-The plugin writes `custom_skin_loader.log` in GTA's working directory. A
+Wardrobe writes `wardrobe.log` in GTA's working directory. A
 successful initialization includes messages like:
 
 ```text
@@ -167,3 +168,10 @@ applied custom model ... to Jacob_Spencer
 Use this only where client-side cosmetic modifications are permitted. This
 plugin is experimental and relies on internal game/SA-MP structures; different
 executables, patches, limit adjusters, or incompatible DFFs can crash the game.
+
+## Affiliation and assets
+
+Wardrobe is an independent project and is not affiliated with or
+endorsed by Rockstar Games, Take-Two Interactive, or the SA-MP project. It
+contains no GTA San Andreas or SA-MP game assets. You are responsible for
+using compatible game copies and custom assets that you have the right to use.

@@ -9,18 +9,18 @@ args = ["build"]
 [tasks.deploy]
 dependencies = ["build-asi"]
 script = [
-    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/release/custom_skin_loader.dll C:/Games/GTASA/custom_skin_loader.asi\"",
-    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/release/custom_skin_loader.pdb C:/Games/GTASA/custom_skin_loader.pdb\"",
+    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/release/wardrobe.dll C:/Games/GTASA/wardrobe.asi\"",
+    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/release/wardrobe.pdb C:/Games/GTASA/wardrobe.pdb\"",
 ]
 
 [tasks.debug]
 dependencies = ["build-asi-debug"]
 script = [
-    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/custom_skin_loader.dll C:/Games/GTASA/custom_skin_loader.asi\"",
-    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/custom_skin_loader.pdb C:/Games/GTASA/custom_skin_loader.pdb\"",
+    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/wardrobe.dll C:/Games/GTASA/wardrobe.asi\"",
+    "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/wardrobe.pdb C:/Games/GTASA/wardrobe.pdb\"",
 ]
 
 [tasks.deploy-ui]
 script = [
-    "powershell -Command \"New-Item -ItemType Directory -Force C:/Games/GTASA/moonloader/scripts/custom_skin_loader_ui | Out-Null; Copy-Item -Force moonloader/custom_skin_loader_ui/custom_skin_loader_ui.lua C:/Games/GTASA/moonloader/scripts/custom_skin_loader_ui/custom_skin_loader_ui.lua\"",
+    "powershell -Command \"New-Item -ItemType Directory -Force C:/Games/GTASA/moonloader/scripts/wardrobe_ui | Out-Null; Copy-Item -Force moonloader/wardrobe_ui/wardrobe_ui.lua C:/Games/GTASA/moonloader/scripts/wardrobe_ui/wardrobe_ui.lua\"",
 ]
