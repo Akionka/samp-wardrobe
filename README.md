@@ -65,8 +65,9 @@ Here is a complete small example:
 ```
 
 Paths are relative to the GTA directory. `donor_model_id` is a normal GTA ped
-model used as a template for the custom one. It is recommended to use the ID of
-the model for which the skin was originally created.
+model used as a template for the custom one. Use the ID of the model the skin
+was originally created for. Wardrobe reserves IDs `18000` through `19999`, so
+they cannot be donors; it also rejects vehicles and objects when loading.
 
 A rule can match by player name, by the server-set model ID, or by both. Player
 names are exact and case-sensitive. When multiple rules apply, Wardrobe picks

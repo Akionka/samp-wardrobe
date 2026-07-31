@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::model_ids;
+
 pub const CONFIG_PATH: &str = "wardrobe.json";
 const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -181,10 +183,12 @@ fn parse(text: &str) -> Result<SkinConfig, String> {
         {
             return Err(format!("skin {skin_id} has an empty asset path"));
         }
-        if !(0..20_000).contains(&definition.donor_model_id) {
+        if !model_ids::is_valid_donor_model_id(definition.donor_model_id) {
             return Err(format!(
-                "skin {skin_id} has invalid donor_model_id {}",
-                definition.donor_model_id
+                "skin {skin_id} has invalid donor_model_id {}; donor IDs must be normal GTA model IDs outside Wardrobe's private range {}..{}",
+                definition.donor_model_id,
+                model_ids::PRIVATE_MODEL_ID_START,
+                model_ids::PRIVATE_MODEL_ID_END,
             ));
         }
     }
@@ -198,7 +202,7 @@ fn parse(text: &str) -> Result<SkinConfig, String> {
         }
         if rule
             .server_model_id
-            .is_some_and(|model_id| !(0..20_000).contains(&(model_id as i32)))
+            .is_some_and(|model_id| !model_ids::is_valid_model_id(model_id as i32))
         {
             return Err(format!("rule {index} has an invalid server model ID"));
         }
@@ -240,6 +244,25 @@ mod tests {
         .unwrap();
 
         assert!(!config.skins["draft"].enabled);
+    }
+
+    #[test]
+    fn donor_model_id_cannot_use_the_private_model_range() {
+        let error = parse(
+            r#"{
+                "skins": {
+                    "unsafe": {
+                        "txd_path": "unsafe.txd",
+                        "dff_path": "unsafe.dff",
+                        "donor_model_id": 18000
+                    }
+                },
+                "rules": []
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("private range 18000..20000"));
     }
 
     #[test]

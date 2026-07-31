@@ -1,5 +1,8 @@
 use crate::config::SkinDefinition;
 use crate::memory;
+use crate::model_ids::{
+    PRIVATE_MODEL_ID_END, PRIVATE_MODEL_ID_START, is_valid_donor_model_id, is_valid_model_id,
+};
 use std::ffi::{CString, c_void};
 use std::path::Path;
 
@@ -45,8 +48,9 @@ const RWSTREAM_FILENAME: i32 = 2;
 const RWSTREAM_READ: i32 = 1;
 const RW_ID_CLUMP: u32 = 0x10;
 
-const PRIVATE_MODEL_ID_START: i32 = 18_000;
-const PRIVATE_MODEL_ID_END: i32 = 20_000;
+// Model 7 is a vanilla CPedModelInfo in the supported GTA SA 1.0 US build.
+// Its vtable is used to distinguish ped donors from vehicles and objects.
+const KNOWN_PED_MODEL_ID: i32 = 7;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SkinResources {
@@ -101,6 +105,19 @@ pub unsafe fn load_skin(
         });
     }
 
+    let donor_model_info = match unsafe { verified_ped_model_info(definition.donor_model_id) } {
+        Ok(model_info) => model_info,
+        Err(reason) => {
+            log::error!(
+                "skin {skin_id}: donor model {} {reason}",
+                definition.donor_model_id
+            );
+            return Err(SkinLoadFailure {
+                recyclable_model_id: recycled_model_id,
+            });
+        }
+    };
+
     log::info!(
         "loading skin {skin_id}: donor={}, txd={}, dff={}",
         definition.donor_model_id,
@@ -153,18 +170,6 @@ pub unsafe fn load_skin(
         });
     }
     let _: *mut c_void = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_REF, txd_slot) };
-
-    let donor_model_info = unsafe { get_model_info(definition.donor_model_id) };
-    if donor_model_info.is_null() {
-        log::error!(
-            "GTA donor ped model {} is not available for skin {skin_id}",
-            definition.donor_model_id
-        );
-        unsafe { remove_txd_slot(txd_slot, true) };
-        return Err(SkinLoadFailure {
-            recyclable_model_id: recycled_model_id,
-        });
-    }
 
     let model_info: *mut c_void = match recycled_model_id {
         Some(_) => unsafe { get_model_info(model_id) },
@@ -412,7 +417,7 @@ unsafe fn clone_ped_model_metadata(destination: *mut c_void, donor: *mut c_void,
 }
 
 unsafe fn get_model_info(model_id: i32) -> *mut c_void {
-    if !(0..20_000).contains(&model_id) {
+    if !is_valid_model_id(model_id) {
         return std::ptr::null_mut();
     }
 
@@ -422,6 +427,37 @@ unsafe fn get_model_info(model_id: i32) -> *mut c_void {
         return std::ptr::null_mut();
     };
     unsafe { memory::read(model_info_address).unwrap_or_default() }
+}
+
+/// Returns a donor only after proving it has CPedModelInfo's vtable. The
+/// configuration parser cannot make this check: GTA's model-info table is
+/// game-owned and must only be inspected from the game thread.
+unsafe fn verified_ped_model_info(model_id: i32) -> Result<*mut c_void, &'static str> {
+    if !is_valid_donor_model_id(model_id) {
+        return Err("is outside the normal model range or reserved for Wardrobe's private models");
+    }
+
+    let donor = unsafe { get_model_info(model_id) };
+    if donor.is_null() {
+        return Err("is not available in GTA's model-info table");
+    }
+
+    let known_ped = unsafe { get_model_info(KNOWN_PED_MODEL_ID) };
+    if known_ped.is_null() {
+        return Err("cannot be type-checked because GTA's known ped model is unavailable");
+    }
+
+    let Some(donor_vtable): Option<usize> = (unsafe { memory::read(donor as usize) }) else {
+        return Err("has an unreadable model-info vtable");
+    };
+    let Some(ped_vtable): Option<usize> = (unsafe { memory::read(known_ped as usize) }) else {
+        return Err("cannot be type-checked because GTA's known ped vtable is unreadable");
+    };
+    if donor_vtable != ped_vtable {
+        return Err("is not a CPedModelInfo ped model");
+    }
+
+    Ok(donor)
 }
 
 unsafe fn find_free_model_id() -> Option<i32> {

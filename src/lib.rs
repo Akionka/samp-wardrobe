@@ -2,6 +2,7 @@ mod config;
 mod gta;
 mod logging;
 mod memory;
+mod model_ids;
 mod runtime;
 mod samp;
 mod skin_loader;

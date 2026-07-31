@@ -9,6 +9,8 @@ local new = imgui.new
 
 local CONFIG_PATH = getGameDirectory() .. [[\wardrobe.json]]
 local TEMP_CONFIG_PATH = CONFIG_PATH .. '.tmp'
+-- Keep this in sync with src/model_ids.rs.
+local PRIVATE_MODEL_ID_START = 18000
 local MOVEFILE_REPLACE_EXISTING = 0x1
 local MOVEFILE_WRITE_THROUGH = 0x8
 
@@ -129,8 +131,8 @@ local function validate_config()
     if type(skin.donor_model_id) ~= 'number'
       or skin.donor_model_id % 1 ~= 0
       or skin.donor_model_id < 0
-      or skin.donor_model_id >= 20000 then
-      return false, 'Profile ' .. skin_id .. ' has an invalid donor model ID.'
+      or skin.donor_model_id >= PRIVATE_MODEL_ID_START then
+      return false, 'Profile ' .. skin_id .. ' needs a normal ped donor ID from 0 to ' .. (PRIVATE_MODEL_ID_START - 1) .. '.'
     end
   end
 
