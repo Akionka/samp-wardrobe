@@ -1327,7 +1327,8 @@ pub extern "system" fn DllMain(_hmodule: HMODULE, reason: u32, _reserved: *mut c
 fn init_logger() {
     if let Ok(file) = File::create("custom_skin_loader.log") {
         let config = ConfigBuilder::new()
-            .set_time_level(LevelFilter::Off)
+            .set_time_level(LevelFilter::Error)
+            .set_time_format_rfc3339()
             .build();
         let _ = WriteLogger::init(LevelFilter::Debug, config, file);
         log::info!("custom_skin_loader started");
