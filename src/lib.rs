@@ -5,6 +5,7 @@ mod memory;
 mod model_ids;
 mod runtime;
 mod samp;
+mod samp_hooks;
 mod skin_loader;
 
 use std::ffi::c_void;

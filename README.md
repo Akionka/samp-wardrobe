@@ -85,6 +85,20 @@ You can edit and save the JSON while GTA is running. Wardrobe notices config
 and skin-file changes within about a second and updates matching streamed-in
 players automatically.
 
+## How Wardrobe notices changes
+
+Polling remains the reliable baseline: Wardrobe checks streamed players about
+five times per second, so it still notices server skin changes even when no
+event hook can be used.
+
+On an unmodified SA-MP 0.3.7-R1 client, Wardrobe can also request an immediate
+check after a remote player spawns or SA-MP applies a skin RPC. It checks both
+the client version marker and the exact target bytes before installing either
+hook. SAMPFUNCS may observe the same RPCs upstream without preventing these
+post-handler hooks. If another mod has already changed either target, Wardrobe
+deliberately leaves both alone and logs that it is using polling. In every mode,
+model loading and model swaps stay on GTA's frame thread.
+
 ## Optional in-game editor
 
 The MoonLoader editor is at `moonloader/wardrobe_ui/wardrobe_ui.lua`. It edits

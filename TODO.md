@@ -51,11 +51,16 @@
 
 ## Future event-driven detection
 
-- [ ] Keep polling as the default, reliable detection path.
-- [ ] Evaluate a pure-Rust `samp.dll` hook for remote-player stream-in and
-  model-change handling. Choose hook targets that do not conflict with
-  SAMPFUNCS or other common mods, validate target bytes before patching, and
-  retain polling as a fallback.
+- [x] Keep polling as the default, reliable detection path.
+- [x] Add guarded pure-Rust SA-MP 0.3.7-R1 refresh hooks. They observe
+  `CRemotePlayer::Spawn` after a remote GTA ped is created and
+  `ScrSetPlayerSkin` after a server model change, then request an immediate
+  pass on the existing GTA frame thread. Require a version marker and exact
+  target bytes before patching; allow SAMPFUNCS to observe RPCs upstream, skip
+  both hooks when a target has already been changed, and keep polling active
+  in every case.
+- [ ] Smoke-test the guarded hook path on a clean SA-MP 0.3.7-R1 install
+  without SAMPFUNCS, including a remote spawn and a server-issued skin reset.
 - [ ] Optionally add a SAMPFUNCS integration through a thin C++ bridge if its
   callback API proves more stable than maintaining direct hooks. The bridge
   should enqueue events only; GTA/RenderWare work must remain on the existing

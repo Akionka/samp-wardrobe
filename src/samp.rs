@@ -21,6 +21,7 @@ const REMOTE_PLAYER_NAME_LENGTH: usize = 0x1C;
 const REMOTE_PLAYER_NAME_CAPACITY: usize = 0x20;
 const MSVC_STRING_SSO_CAPACITY: usize = 15;
 
+#[derive(Clone, Copy)]
 pub struct Samp {
     base: usize,
 }
@@ -36,7 +37,7 @@ pub struct StreamedPed {
 impl Samp {
     pub fn wait_for_load() -> Self {
         let base = loop {
-            let module = unsafe { GetModuleHandleA(b"samp.dll\0".as_ptr()) };
+            let module = unsafe { GetModuleHandleA(c"samp.dll".as_ptr().cast()) };
             if module != 0 {
                 break module as usize;
             }

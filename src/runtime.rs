@@ -1,6 +1,7 @@
 use crate::config::{CONFIG_PATH, ConfigWatcher, SkinConfig};
 use crate::gta;
 use crate::samp::{PlayerId, Samp, StreamedPed};
+use crate::samp_hooks;
 use crate::skin_loader::SkinManager;
 use retour::GenericDetour;
 use std::collections::{HashMap, HashSet};
@@ -48,11 +49,18 @@ impl Runtime {
     unsafe fn process_game_frame(&mut self) {
         // The hook runs every GTA frame, but scanning a 1004-slot SA-MP pool
         // does not need to. Five polls per second keeps skin changes
-        // responsive without doing the full scan on every frame.
+        // responsive without doing the full scan on every frame. Guarded
+        // SA-MP event hooks may request an earlier pass after a remote ped
+        // spawns or the server changes a skin.
         let now = Instant::now();
-        if self
-            .last_poll
-            .is_some_and(|last_poll| now.duration_since(last_poll) < POLL_INTERVAL)
+        let event_refresh_reason = samp_hooks::take_refresh_request();
+        if let Some(reason) = event_refresh_reason {
+            log::debug!("SA-MP event requested an immediate skin scan after {reason}");
+        }
+        if event_refresh_reason.is_none()
+            && self
+                .last_poll
+                .is_some_and(|last_poll| now.duration_since(last_poll) < POLL_INTERVAL)
         {
             return;
         }
@@ -272,7 +280,14 @@ pub unsafe fn install(config: SkinConfig, samp: Samp) -> Result<(), retour::Erro
         .expect("CGame::Process hook was installed twice");
 
     let hook = GAME_PROCESS_HOOK.get().unwrap();
-    unsafe { hook.enable() }
+    unsafe { hook.enable() }?;
+
+    match unsafe { samp_hooks::install(&samp) } {
+        Ok(()) => log::info!("installed guarded SA-MP spawn and skin-change hooks"),
+        Err(error) => log::warn!("SA-MP event hooks are unavailable; using polling: {error}"),
+    }
+
+    Ok(())
 }
 
 unsafe extern "cdecl" fn game_process_detour() {
