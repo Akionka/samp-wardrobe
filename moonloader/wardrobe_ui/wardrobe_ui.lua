@@ -129,10 +129,11 @@ local function validate_config()
       return false, 'Enabled profile ' .. skin_id .. ' needs TXD and DFF paths.'
     end
     if type(skin.donor_model_id) ~= 'number'
-      or skin.donor_model_id % 1 ~= 0
-      or skin.donor_model_id < 0
-      or skin.donor_model_id >= PRIVATE_MODEL_ID_START then
-      return false, 'Profile ' .. skin_id .. ' needs a normal ped donor ID from 0 to ' .. (PRIVATE_MODEL_ID_START - 1) .. '.'
+        or skin.donor_model_id % 1 ~= 0
+        or skin.donor_model_id < 0
+        or skin.donor_model_id >= PRIVATE_MODEL_ID_START then
+      return false,
+          'Profile ' .. skin_id .. ' needs a normal ped donor ID from 0 to ' .. (PRIVATE_MODEL_ID_START - 1) .. '.'
     end
   end
 
@@ -147,10 +148,10 @@ local function validate_config()
       return false, 'Rule ' .. index .. ' has an invalid player name.'
     end
     if rule.server_model_id ~= nil
-      and (type(rule.server_model_id) ~= 'number'
-        or rule.server_model_id % 1 ~= 0
-        or rule.server_model_id < 0
-        or rule.server_model_id >= 20000) then
+        and (type(rule.server_model_id) ~= 'number'
+          or rule.server_model_id % 1 ~= 0
+          or rule.server_model_id < 0
+          or rule.server_model_id >= 20000) then
       return false, 'Rule ' .. index .. ' has an invalid server model ID.'
     end
     if rule.player_name == nil and rule.server_model_id == nil then
@@ -159,7 +160,7 @@ local function validate_config()
     for previous_index = 1, index - 1 do
       local previous = state.config.rules[previous_index]
       if previous.player_name == rule.player_name
-        and previous.server_model_id == rule.server_model_id then
+          and previous.server_model_id == rule.server_model_id then
         return false, 'Rule ' .. index .. ' duplicates rule ' .. previous_index .. '.'
       end
     end
@@ -262,7 +263,7 @@ local function save_config()
   end
 
   state.dirty = false
-  set_status('Saved. The Rust loader will reload it within one second.', false)
+  set_status('Saved. The loader will reload it within one second.', false)
   return true
 end
 
@@ -454,15 +455,15 @@ end
 local function draw_profiles()
   imgui.BeginGroup()
   imgui.BeginChild('##skin_profiles', imgui.ImVec2(220, 195), true, imgui.WindowFlags.None)
-    imgui.Text('Skin profiles')
-    imgui.Separator()
-    for _, skin_id in ipairs(sorted_keys(state.config.skins)) do
-      local skin = state.config.skins[skin_id]
-      local label = skin.enabled and skin_id or skin_id .. ' (disabled)'
-      if imgui.Selectable(label, state.selected_skin == skin_id) then
-        select_profile(skin_id)
-      end
+  imgui.Text('Skin profiles')
+  imgui.Separator()
+  for _, skin_id in ipairs(sorted_keys(state.config.skins)) do
+    local skin = state.config.skins[skin_id]
+    local label = skin.enabled and skin_id or skin_id .. ' (disabled)'
+    if imgui.Selectable(label, state.selected_skin == skin_id) then
+      select_profile(skin_id)
     end
+  end
   imgui.EndChild()
   if imgui.Button('Add##profile', imgui.ImVec2(106, 0)) then add_profile() end
   imgui.SameLine()
@@ -548,13 +549,13 @@ end
 local function draw_rules()
   imgui.BeginGroup()
   imgui.BeginChild('##skin_rules', imgui.ImVec2(220, 170), true, imgui.WindowFlags.None)
-    imgui.Text('Matching rules')
-    imgui.Separator()
-    for index, rule in ipairs(state.config.rules) do
-      if imgui.Selectable(rule_label(rule) .. '##rule' .. index, state.selected_rule == index) then
-        select_rule(index)
-      end
+  imgui.Text('Matching rules')
+  imgui.Separator()
+  for index, rule in ipairs(state.config.rules) do
+    if imgui.Selectable(rule_label(rule) .. '##rule' .. index, state.selected_rule == index) then
+      select_rule(index)
     end
+  end
   imgui.EndChild()
   if imgui.Button('Add##rule', imgui.ImVec2(106, 0)) then add_rule() end
   imgui.SameLine()
