@@ -7,14 +7,16 @@
       "donor_model_id": 7
     }
   },
-  "players": {
-    "Jacob_Spencer": {
-      "skin_id": "jacob_spencer",
+  "rules": [
+    {
+      "profile_id": "jacob_spencer",
+      "player_name": "Jacob_Spencer",
       "enabled": true
     },
-    "Jacob_Alt": {
-      "skin_id": "jacob_spencer",
+    {
+      "profile_id": "jacob_spencer",
+      "server_model_id": 67,
       "enabled": true
     }
-  }
+  ]
 }

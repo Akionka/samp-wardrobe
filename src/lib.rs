@@ -28,15 +28,15 @@ fn plugin_thread() {
         }
     };
     let skin_count = config.skins.len();
-    let player_count = config.players.len();
-    if player_count == 0 {
+    let rule_count = config.rules.len();
+    if rule_count == 0 {
         log::info!(
-            "{} has no player mappings; waiting for a configuration change",
+            "{} has no rules; waiting for a configuration change",
             config::CONFIG_PATH
         );
     }
     log::info!(
-        "loaded {}: {skin_count} skin(s), {player_count} player mapping(s)",
+        "loaded {}: {skin_count} skin(s), {rule_count} rule(s)",
         config::CONFIG_PATH
     );
 
@@ -53,7 +53,7 @@ fn plugin_thread() {
         return;
     }
     log::info!("installed CGame::Process hook");
-    log::info!("watching {player_count} configured player(s) across {skin_count} skin(s)");
+    log::info!("watching {rule_count} configured rule(s) across {skin_count} skin(s)");
 }
 
 /*

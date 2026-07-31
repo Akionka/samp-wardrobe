@@ -60,32 +60,37 @@ impl Runtime {
 
         self.reload_config_if_changed();
 
-        let tracked_names = self
-            .config
-            .players
-            .keys()
-            .chain(self.applied_players.keys())
-            .cloned()
-            .collect::<HashSet<_>>();
-        if tracked_names.is_empty() {
+        if self.config.rules.is_empty() && self.applied_players.is_empty() {
             unsafe { self.cleanup_retired_skins() };
             return;
         }
 
-        let configured_peds = unsafe { self.samp.configured_peds(&tracked_names) };
-        for StreamedPed { name, address } in configured_peds {
-            let Some(assignment) = self.config.players.get(&name) else {
-                unsafe { self.restore_server_model(&name, address, "removing its assignment") };
+        let streamed_peds = unsafe { self.samp.streamed_peds() };
+        for StreamedPed { name, address } in streamed_peds {
+            let Some(current_model_id) = (unsafe { gta::ped_model_id(address) }) else {
                 continue;
             };
-            if !assignment.is_enabled() {
-                unsafe { self.restore_server_model(&name, address, "disabling its assignment") };
+
+            let server_model_id = if self.skins.is_private_model(current_model_id) {
+                self.applied_players
+                    .get(&name)
+                    .and_then(|applied| applied.last_server_model_id)
+            } else {
+                Some(current_model_id)
+            };
+            let Some(server_model_id) = server_model_id else {
+                unsafe {
+                    self.restore_server_model(&name, address, "losing its remembered server model")
+                };
                 continue;
             };
-            let skin_id = assignment.skin_id().to_owned();
+
+            let Some(rule) = self.config.matching_rule(&name, server_model_id).cloned() else {
+                unsafe { self.restore_server_model(&name, address, "having no matching rule") };
+                continue;
+            };
+            let skin_id = rule.profile_id;
             let Some(definition) = self.config.skins.get(&skin_id).cloned() else {
-                // Keeping this mapping in the JSON is useful while editing. It
-                // simply disables the custom assignment and restores the ped.
                 unsafe { self.restore_server_model(&name, address, "removing its skin profile") };
                 continue;
             };
@@ -95,33 +100,20 @@ impl Runtime {
             };
 
             if self.matched_players.insert(name.clone()) {
-                log::info!("matched configured player {name} to skin {skin_id}");
+                log::info!("matched {name} with server model {server_model_id} to skin {skin_id}");
             }
             let Some(model_id) = (unsafe { self.skins.model_for(&skin_id, &definition) }) else {
                 continue;
             };
 
-            // SA-MP can reset a ped while it remains streamed in. Before
-            // applying our replacement again, remember the newly supplied
-            // server model.
-            let Some(current_model_id) = (unsafe { gta::ped_model_id(address) }) else {
-                continue;
-            };
             if current_model_id != model_id as i16 {
-                let last_server_model_id = if self.skins.is_private_model(current_model_id) {
-                    self.applied_players
-                        .get(&name)
-                        .and_then(|applied| applied.last_server_model_id)
-                } else {
-                    Some(current_model_id)
-                };
                 unsafe { gta::set_ped_model_index(address, model_id) };
                 self.applied_players.insert(
                     name.clone(),
                     AppliedPlayer {
                         skin_id,
                         custom_model_id: model_id,
-                        last_server_model_id,
+                        last_server_model_id: Some(server_model_id),
                     },
                 );
                 log::debug!("applied custom model {model_id} to {name}");
@@ -129,7 +121,8 @@ impl Runtime {
                 let last_server_model_id = self
                     .applied_players
                     .get(&name)
-                    .and_then(|applied| applied.last_server_model_id);
+                    .and_then(|applied| applied.last_server_model_id)
+                    .or(Some(server_model_id));
                 self.applied_players.insert(
                     name.clone(),
                     AppliedPlayer {
@@ -150,13 +143,11 @@ impl Runtime {
         };
 
         let skin_count = config.skins.len();
-        let player_count = config.players.len();
+        let rule_count = config.rules.len();
         self.skins.apply_config(&config);
         self.config = config;
         self.matched_players.clear();
-        log::info!(
-            "reloaded {CONFIG_PATH}: {skin_count} skin(s), {player_count} player mapping(s)"
-        );
+        log::info!("reloaded {CONFIG_PATH}: {skin_count} skin(s), {rule_count} rule(s)");
     }
 
     unsafe fn restore_server_model(

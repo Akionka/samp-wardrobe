@@ -35,10 +35,10 @@ pub struct SkinManager {
 impl SkinManager {
     pub fn apply_config(&mut self, config: &SkinConfig) {
         let referenced_skins = config
-            .players
-            .values()
-            .filter(|assignment| assignment.is_enabled())
-            .map(|assignment| assignment.skin_id())
+            .rules
+            .iter()
+            .filter(|rule| rule.enabled)
+            .map(|rule| rule.profile_id.as_str())
             .filter(|skin_id| {
                 config
                     .skins

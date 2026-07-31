@@ -20,29 +20,35 @@ pub struct SkinDefinition {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(untagged)]
-pub enum PlayerAssignment {
-    // Preserve compatibility with the original compact schema.
-    Legacy(String),
-    Detailed {
-        skin_id: String,
-        #[serde(default = "enabled_by_default")]
-        enabled: bool,
-    },
+pub struct SkinRule {
+    pub profile_id: String,
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub player_name: Option<String>,
+    #[serde(default)]
+    pub server_model_id: Option<i16>,
 }
 
-impl PlayerAssignment {
-    pub fn skin_id(&self) -> &str {
-        match self {
-            Self::Legacy(skin_id) | Self::Detailed { skin_id, .. } => skin_id,
+impl SkinRule {
+    fn priority(&self) -> u8 {
+        match (self.player_name.is_some(), self.server_model_id.is_some()) {
+            (true, true) => 3,
+            (true, false) => 2,
+            (false, true) => 1,
+            (false, false) => 0,
         }
     }
 
-    pub fn is_enabled(&self) -> bool {
-        match self {
-            Self::Legacy(_) => true,
-            Self::Detailed { enabled, .. } => *enabled,
-        }
+    fn matches(&self, player_name: &str, server_model_id: i16) -> bool {
+        self.enabled
+            && self
+                .player_name
+                .as_deref()
+                .is_none_or(|expected| expected == player_name)
+            && self
+                .server_model_id
+                .is_none_or(|expected| expected == server_model_id)
     }
 }
 
@@ -51,7 +57,22 @@ pub struct SkinConfig {
     #[serde(default)]
     pub skins: HashMap<String, SkinDefinition>,
     #[serde(default)]
-    pub players: HashMap<String, PlayerAssignment>,
+    pub rules: Vec<SkinRule>,
+}
+
+impl SkinConfig {
+    pub fn matching_rule(&self, player_name: &str, server_model_id: i16) -> Option<&SkinRule> {
+        (1..=3).rev().find_map(|priority| {
+            self.rules.iter().find(|rule| {
+                rule.priority() == priority
+                    && rule.matches(player_name, server_model_id)
+                    && self
+                        .skins
+                        .get(&rule.profile_id)
+                        .is_some_and(|profile| profile.enabled)
+            })
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,21 +189,38 @@ fn parse(text: &str) -> Result<SkinConfig, String> {
         }
     }
 
+    for (index, rule) in config.rules.iter().enumerate() {
+        if rule.profile_id.is_empty() || !config.skins.contains_key(&rule.profile_id) {
+            return Err(format!("rule {index} refers to an unknown skin profile"));
+        }
+        if rule.player_name.as_deref().is_some_and(str::is_empty) {
+            return Err(format!("rule {index} has an empty player name"));
+        }
+        if rule
+            .server_model_id
+            .is_some_and(|model_id| !(0..20_000).contains(&(model_id as i32)))
+        {
+            return Err(format!("rule {index} has an invalid server model ID"));
+        }
+        if rule.priority() == 0 {
+            return Err(format!(
+                "rule {index} needs a player name or server model ID"
+            ));
+        }
+        if config.rules[..index].iter().any(|previous| {
+            previous.player_name == rule.player_name
+                && previous.server_model_id == rule.server_model_id
+        }) {
+            return Err(format!("rule {index} duplicates an earlier rule"));
+        }
+    }
+
     Ok(config)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn legacy_player_mappings_remain_enabled() {
-        let config = parse(r#"{"players":{"Jacob_Spencer":"jacob_spencer"}}"#).unwrap();
-        let assignment = config.players.get("Jacob_Spencer").unwrap();
-
-        assert_eq!(assignment.skin_id(), "jacob_spencer");
-        assert!(assignment.is_enabled());
-    }
 
     #[test]
     fn disabled_profiles_accept_empty_asset_paths() {
@@ -196,15 +234,56 @@ mod tests {
                         "donor_model_id": 7
                     }
                 },
-                "players": {
-                    "Jacob_Spencer": { "skin_id": "draft", "enabled": false }
-                }
+                "rules": []
             }"#,
         )
         .unwrap();
 
         assert!(!config.skins["draft"].enabled);
-        assert!(!config.players["Jacob_Spencer"].is_enabled());
+    }
+
+    #[test]
+    fn rules_prefer_combined_then_player_then_model_matches() {
+        let mut config = parse(
+            r#"{
+                "skins": {
+                    "combined": { "txd_path": "combined.txd", "dff_path": "combined.dff", "donor_model_id": 7 },
+                    "player": { "txd_path": "player.txd", "dff_path": "player.dff", "donor_model_id": 7 },
+                    "model": { "txd_path": "model.txd", "dff_path": "model.dff", "donor_model_id": 7 }
+                },
+                "rules": [
+                    { "profile_id": "model", "server_model_id": 67 },
+                    { "profile_id": "player", "player_name": "Jacob_Spencer" },
+                    { "profile_id": "combined", "player_name": "Jacob_Spencer", "server_model_id": 67 }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config
+                .matching_rule("Jacob_Spencer", 67)
+                .unwrap()
+                .profile_id,
+            "combined"
+        );
+        assert_eq!(
+            config.matching_rule("Jacob_Spencer", 7).unwrap().profile_id,
+            "player"
+        );
+        assert_eq!(
+            config.matching_rule("Other_Player", 67).unwrap().profile_id,
+            "model"
+        );
+
+        config.skins.get_mut("combined").unwrap().enabled = false;
+        assert_eq!(
+            config
+                .matching_rule("Jacob_Spencer", 67)
+                .unwrap()
+                .profile_id,
+            "player"
+        );
     }
 }
 

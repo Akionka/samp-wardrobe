@@ -47,21 +47,22 @@ local function input_int(label, value)
 end
 
 local state = {
-  config = { skins = {}, players = {} },
+  config = { skins = {}, rules = {} },
   window_open = new.bool(false),
   dirty = false,
   status = 'Use /skins to open this editor.',
   status_is_error = false,
   selected_skin = nil,
-  selected_player = nil,
+  selected_rule = nil,
   profile_id = new.char[64](),
   txd_path = new.char[260](),
   dff_path = new.char[260](),
   donor_model_id = new.int(7),
   profile_enabled = new.bool(true),
-  player_name = new.char[64](),
-  player_skin_id = new.char[64](),
-  player_enabled = new.bool(true),
+  rule_player_name = new.char[64](),
+  rule_profile_id = new.char[64](),
+  rule_server_model_id = new.int(-1),
+  rule_enabled = new.bool(true),
   profile_search = new.char[64](),
 }
 
@@ -94,18 +95,17 @@ end
 local function ensure_schema(config)
   if type(config) ~= 'table' then config = {} end
   if type(config.skins) ~= 'table' then config.skins = {} end
-  if type(config.players) ~= 'table' then config.players = {} end
+  if type(config.rules) ~= 'table' then config.rules = {} end
+  config.players = nil
 
   for _, skin in pairs(config.skins) do
     if type(skin) == 'table' and skin.enabled == nil then
       skin.enabled = true
     end
   end
-  for player_name, assignment in pairs(config.players) do
-    if type(assignment) == 'string' then
-      config.players[player_name] = { skin_id = assignment, enabled = true }
-    elseif type(assignment) == 'table' and assignment.enabled == nil then
-      assignment.enabled = true
+  for _, rule in ipairs(config.rules) do
+    if type(rule) == 'table' and rule.enabled == nil then
+      rule.enabled = true
     end
   end
 
@@ -134,15 +134,32 @@ local function validate_config()
     end
   end
 
-  for player_name, assignment in pairs(state.config.players) do
-    if player_name == '' then
-      return false, 'An assignment has an empty player name.'
+  for index, rule in ipairs(state.config.rules) do
+    if type(rule) ~= 'table' or type(rule.enabled) ~= 'boolean' then
+      return false, 'Rule ' .. index .. ' has an invalid enabled flag.'
     end
-    if type(assignment) ~= 'table' or type(assignment.enabled) ~= 'boolean' then
-      return false, 'Player ' .. player_name .. ' has an invalid enabled flag.'
+    if type(rule.profile_id) ~= 'string' or not state.config.skins[rule.profile_id] then
+      return false, 'Rule ' .. index .. ' has no valid profile assignment.'
     end
-    if type(assignment.skin_id) ~= 'string' or not state.config.skins[assignment.skin_id] then
-      return false, 'Player ' .. player_name .. ' has no valid profile assignment.'
+    if rule.player_name ~= nil and (type(rule.player_name) ~= 'string' or rule.player_name == '') then
+      return false, 'Rule ' .. index .. ' has an invalid player name.'
+    end
+    if rule.server_model_id ~= nil
+      and (type(rule.server_model_id) ~= 'number'
+        or rule.server_model_id % 1 ~= 0
+        or rule.server_model_id < 0
+        or rule.server_model_id >= 20000) then
+      return false, 'Rule ' .. index .. ' has an invalid server model ID.'
+    end
+    if rule.player_name == nil and rule.server_model_id == nil then
+      return false, 'Rule ' .. index .. ' needs a player name or server model ID.'
+    end
+    for previous_index = 1, index - 1 do
+      local previous = state.config.rules[previous_index]
+      if previous.player_name == rule.player_name
+        and previous.server_model_id == rule.server_model_id then
+        return false, 'Rule ' .. index .. ' duplicates rule ' .. previous_index .. '.'
+      end
     end
   end
 
@@ -152,18 +169,19 @@ end
 local function load_config()
   local file = io.open(CONFIG_PATH, 'rb')
   if not file then
-    state.config = { skins = {}, players = {} }
+    state.config = { skins = {}, rules = {} }
     state.dirty = false
     state.selected_skin = nil
-    state.selected_player = nil
+    state.selected_rule = nil
     set_buffer(state.profile_id, '')
     set_buffer(state.txd_path, '')
     set_buffer(state.dff_path, '')
     state.donor_model_id[0] = 7
     state.profile_enabled[0] = true
-    set_buffer(state.player_name, '')
-    set_buffer(state.player_skin_id, '')
-    state.player_enabled[0] = true
+    set_buffer(state.rule_player_name, '')
+    set_buffer(state.rule_profile_id, '')
+    state.rule_server_model_id[0] = -1
+    state.rule_enabled[0] = true
     set_buffer(state.profile_search, '')
     set_status('No config file yet. Saving will create it.', false)
     return true
@@ -187,15 +205,16 @@ local function load_config()
   end
   state.dirty = false
   state.selected_skin = nil
-  state.selected_player = nil
+  state.selected_rule = nil
   set_buffer(state.profile_id, '')
   set_buffer(state.txd_path, '')
   set_buffer(state.dff_path, '')
   state.donor_model_id[0] = 7
   state.profile_enabled[0] = true
-  set_buffer(state.player_name, '')
-  set_buffer(state.player_skin_id, '')
-  state.player_enabled[0] = true
+  set_buffer(state.rule_player_name, '')
+  set_buffer(state.rule_profile_id, '')
+  state.rule_server_model_id[0] = -1
+  state.rule_enabled[0] = true
   set_buffer(state.profile_search, '')
   set_status('Loaded custom_skin_loader.json.', false)
   return true
@@ -303,9 +322,9 @@ local function sync_profile_id()
 
   state.config.skins[new_skin_id] = state.config.skins[old_skin_id]
   state.config.skins[old_skin_id] = nil
-  for player_name, assigned_skin in pairs(state.config.players) do
-    if assigned_skin.skin_id == old_skin_id then
-      assigned_skin.skin_id = new_skin_id
+  for _, rule in ipairs(state.config.rules) do
+    if rule.profile_id == old_skin_id then
+      rule.profile_id = new_skin_id
     end
   end
   state.selected_skin = new_skin_id
@@ -335,125 +354,99 @@ local function delete_selected_profile()
   end
 
   state.config.skins[skin_id] = nil
-  for player_name, assigned_skin in pairs(state.config.players) do
-    if assigned_skin.skin_id == skin_id then
-      state.config.players[player_name] = nil
+  for index = #state.config.rules, 1, -1 do
+    if state.config.rules[index].profile_id == skin_id then
+      table.remove(state.config.rules, index)
     end
   end
   clear_profile_editor()
-  state.selected_player = nil
-  set_buffer(state.player_name, '')
-  set_buffer(state.player_skin_id, '')
-  state.player_enabled[0] = true
+  state.selected_rule = nil
+  set_buffer(state.rule_player_name, '')
+  set_buffer(state.rule_profile_id, '')
+  state.rule_server_model_id[0] = -1
+  state.rule_enabled[0] = true
   set_buffer(state.profile_search, '')
   state.dirty = true
-  set_status('Deleted the profile and its player assignments. Save JSON to apply.', false)
+  set_status('Deleted the profile and its matching rules. Save JSON to apply.', false)
 end
 
-local function clear_player_editor()
-  state.selected_player = nil
-  set_buffer(state.player_name, '')
-  set_buffer(state.player_skin_id, '')
-  state.player_enabled[0] = true
-  set_buffer(state.profile_search, '')
-end
-
-local function select_player(player_name)
-  local assignment = state.config.players[player_name]
-  if not assignment then return end
-
-  state.selected_player = player_name
-  set_buffer(state.player_name, player_name)
-  set_buffer(state.player_skin_id, assignment.skin_id)
-  state.player_enabled[0] = assignment.enabled
+local function clear_rule_editor()
+  state.selected_rule = nil
+  set_buffer(state.rule_player_name, '')
+  set_buffer(state.rule_profile_id, '')
+  state.rule_server_model_id[0] = -1
+  state.rule_enabled[0] = true
   set_buffer(state.profile_search, '')
 end
 
-local function add_player_assignment()
-  local skin_id
-  for _, candidate in ipairs(sorted_keys(state.config.skins)) do
-    if state.config.skins[candidate].enabled then
-      skin_id = candidate
-      break
-    end
-  end
-  if not skin_id then
-    set_status('Enable a profile before creating a player assignment.', true)
-    return
-  end
+local function select_rule(index)
+  local rule = state.config.rules[index]
+  if not rule then return end
 
-  local player_name = 'new_player'
-  local suffix = 2
-  while state.config.players[player_name] do
-    player_name = 'new_player_' .. suffix
-    suffix = suffix + 1
-  end
-
-  state.config.players[player_name] = { skin_id = skin_id, enabled = true }
-  select_player(player_name)
-  state.dirty = true
-  set_status('Added a player assignment. Changes are staged until Save JSON.', false)
+  state.selected_rule = index
+  set_buffer(state.rule_player_name, rule.player_name or '')
+  set_buffer(state.rule_profile_id, rule.profile_id)
+  state.rule_server_model_id[0] = rule.server_model_id or -1
+  state.rule_enabled[0] = rule.enabled
+  set_buffer(state.profile_search, '')
 end
 
-local function sync_player_name()
-  local old_player_name = state.selected_player
-  if not old_player_name or not state.config.players[old_player_name] then return end
-
-  local new_player_name = trim(buffer_value(state.player_name))
-  if new_player_name == '' then
-    set_status('Player name cannot be empty. The existing assignment was kept.', true)
-    return
-  end
-  if new_player_name == old_player_name then return end
-  if state.config.players[new_player_name] then
-    set_buffer(state.player_name, old_player_name)
-    set_status('That player already has an assignment.', true)
+local function add_rule()
+  local profile_ids = sorted_keys(state.config.skins)
+  if #profile_ids == 0 then
+    set_status('Add a profile before creating a matching rule.', true)
     return
   end
 
-  state.config.players[new_player_name] = state.config.players[old_player_name]
-  state.config.players[old_player_name] = nil
-  state.selected_player = new_player_name
-  set_buffer(state.player_name, new_player_name)
+  table.insert(state.config.rules, {
+    profile_id = profile_ids[1],
+    enabled = true,
+  })
+  select_rule(#state.config.rules)
   state.dirty = true
-  set_status('Player assignment is staged. Save JSON to apply it in-game.', false)
+  set_status('Added a rule. Set a player name or server model ID before saving.', false)
 end
 
-local function sync_player_profile()
-  local player_name = state.selected_player
-  local skin_id = trim(buffer_value(state.player_skin_id))
-  if not player_name or not state.config.players[player_name] then return end
-  if not state.config.skins[skin_id] then
-    set_status('Choose an existing profile ID for this player.', true)
+local function sync_rule_profile()
+  local index = state.selected_rule
+  local rule = index and state.config.rules[index]
+  local profile_id = trim(buffer_value(state.rule_profile_id))
+  if not rule then return end
+  if not state.config.skins[profile_id] then
+    set_status('Choose an existing profile ID for this rule.', true)
     return
   end
 
-  state.config.players[player_name].skin_id = skin_id
+  rule.profile_id = profile_id
   state.dirty = true
-  set_status('Player assignment is staged. Save JSON to apply it in-game.', false)
+  set_status('Rule changes are staged. Save JSON to apply them in-game.', false)
 end
 
-local function sync_player_enabled()
-  local player_name = state.selected_player
-  local assignment = player_name and state.config.players[player_name]
-  if not assignment then return end
+local function sync_rule_conditions()
+  local index = state.selected_rule
+  local rule = index and state.config.rules[index]
+  if not rule then return end
 
-  assignment.enabled = state.player_enabled[0]
+  local player_name = trim(buffer_value(state.rule_player_name))
+  local server_model_id = state.rule_server_model_id[0]
+  rule.player_name = player_name ~= '' and player_name or nil
+  rule.server_model_id = server_model_id >= 0 and server_model_id or nil
+  rule.enabled = state.rule_enabled[0]
   state.dirty = true
-  set_status('Player assignment is staged. Save JSON to apply it in-game.', false)
+  set_status('Rule changes are staged. Save JSON to apply them in-game.', false)
 end
 
-local function delete_selected_player()
-  local player_name = state.selected_player
-  if not player_name or not state.config.players[player_name] then
-    set_status('Select a player assignment to delete.', true)
+local function delete_selected_rule()
+  local index = state.selected_rule
+  if not index or not state.config.rules[index] then
+    set_status('Select a matching rule to delete.', true)
     return
   end
 
-  state.config.players[player_name] = nil
-  clear_player_editor()
+  table.remove(state.config.rules, index)
+  clear_rule_editor()
   state.dirty = true
-  set_status('Deleted the player assignment. Save JSON to apply it in-game.', false)
+  set_status('Deleted the matching rule. Save JSON to apply.', false)
 end
 
 local function draw_profiles()
@@ -487,16 +480,16 @@ local function draw_profiles()
   imgui.EndGroup()
 end
 
-local function profile_picker()
-  local selected_skin_id = buffer_value(state.player_skin_id)
-  local preview = selected_skin_id ~= '' and selected_skin_id or 'Choose a profile...'
+local function rule_profile_picker()
+  local selected_profile_id = buffer_value(state.rule_profile_id)
+  local preview = selected_profile_id ~= '' and selected_profile_id or 'Choose a profile...'
 
-  if imgui.BeginCombo('Profile ID##player', preview) then
+  if imgui.BeginCombo('Profile ID##rule', preview) then
     if imgui.IsWindowAppearing() then
       set_buffer(state.profile_search, '')
       imgui.SetKeyboardFocusHere()
     end
-    input_text_with_hint('##profile_search', 'Search profiles...', state.profile_search)
+    input_text_with_hint('##rule_profile_search', 'Search profiles...', state.profile_search)
     imgui.Separator()
 
     local search = buffer_value(state.profile_search):lower()
@@ -504,13 +497,13 @@ local function profile_picker()
     for _, skin_id in ipairs(sorted_keys(state.config.skins)) do
       if search == '' or skin_id:lower():find(search, 1, true) then
         found_match = true
-        local is_selected = selected_skin_id == skin_id
+        local is_selected = selected_profile_id == skin_id
         local skin = state.config.skins[skin_id]
         local label = skin.enabled and skin_id or skin_id .. ' (disabled)'
         if imgui.Selectable(label, is_selected) then
-          set_buffer(state.player_skin_id, skin_id)
+          set_buffer(state.rule_profile_id, skin_id)
           set_buffer(state.profile_search, '')
-          sync_player_profile()
+          sync_rule_profile()
         end
       end
     end
@@ -522,33 +515,62 @@ local function profile_picker()
   end
 end
 
-local function draw_players()
+local function rule_label(rule)
+  local condition
+  if rule.player_name and rule.server_model_id ~= nil then
+    condition = rule.player_name .. ' + model ' .. rule.server_model_id
+  elseif rule.player_name then
+    condition = rule.player_name
+  elseif rule.server_model_id ~= nil then
+    condition = 'model ' .. rule.server_model_id
+  else
+    condition = 'incomplete rule'
+  end
+
+  local label = condition .. ' -> ' .. tostring(rule.profile_id)
+  if not rule.enabled then label = label .. ' (disabled)' end
+  return label
+end
+
+local function rule_priority_label(rule)
+  if rule.player_name and rule.server_model_id ~= nil then
+    return 'Priority: player + server model'
+  elseif rule.player_name then
+    return 'Priority: player name'
+  elseif rule.server_model_id ~= nil then
+    return 'Priority: server model'
+  end
+  return 'Set a player name or server model ID.'
+end
+
+local function draw_rules()
   imgui.BeginGroup()
-  imgui.BeginChild('##player_assignments', imgui.ImVec2(220, 170), true, imgui.WindowFlags.None)
-    imgui.Text('Player assignments')
+  imgui.BeginChild('##skin_rules', imgui.ImVec2(220, 170), true, imgui.WindowFlags.None)
+    imgui.Text('Matching rules')
     imgui.Separator()
-    for _, player_name in ipairs(sorted_keys(state.config.players)) do
-      local assignment = state.config.players[player_name]
-      local label = player_name .. ' -> ' .. assignment.skin_id
-      if not assignment.enabled then label = label .. ' (disabled)' end
-      if imgui.Selectable(label, state.selected_player == player_name) then
-        select_player(player_name)
+    for index, rule in ipairs(state.config.rules) do
+      if imgui.Selectable(rule_label(rule) .. '##rule' .. index, state.selected_rule == index) then
+        select_rule(index)
       end
     end
   imgui.EndChild()
-  if imgui.Button('Add##assignment', imgui.ImVec2(106, 0)) then add_player_assignment() end
+  if imgui.Button('Add##rule', imgui.ImVec2(106, 0)) then add_rule() end
   imgui.SameLine()
-  if imgui.Button('Delete##assignment', imgui.ImVec2(106, 0)) then delete_selected_player() end
+  if imgui.Button('Delete##rule', imgui.ImVec2(106, 0)) then delete_selected_rule() end
   imgui.EndGroup()
 
   imgui.SameLine()
   imgui.BeginGroup()
-  imgui.Text(state.selected_player and 'Edit assignment' or 'Add an assignment to edit it')
+  imgui.Text(state.selected_rule and 'Edit matching rule' or 'Add a rule to edit it')
   imgui.PushItemWidth(320)
-  if input_text('Player name', state.player_name) then sync_player_name() end
-  profile_picker()
+  if input_text('Player name (blank = any)', state.rule_player_name) then sync_rule_conditions() end
+  if input_int('Server model ID (-1 = any)', state.rule_server_model_id) then sync_rule_conditions() end
+  rule_profile_picker()
   imgui.PopItemWidth()
-  if imgui.Checkbox('Enabled##assignment', state.player_enabled) then sync_player_enabled() end
+  if imgui.Checkbox('Enabled##rule', state.rule_enabled) then sync_rule_conditions() end
+  if state.selected_rule then
+    imgui.TextDisabled(rule_priority_label(state.config.rules[state.selected_rule]))
+  end
   imgui.EndGroup()
 end
 
@@ -568,7 +590,7 @@ imgui.OnFrame(
     imgui.Separator()
     draw_profiles()
     imgui.Separator()
-    draw_players()
+    draw_rules()
     imgui.Separator()
 
     if state.status_is_error then

@@ -2,8 +2,8 @@
 
 ## Next priorities
 
-- [x] Validate the `skins` + `players` JSON schema in-game with a real streamed
-  player. Confirm one skin can be assigned to multiple player names.
+- [x] Validate the `skins` + `rules` JSON schema in-game with real streamed
+  players. Confirm combined, player-only, and model-only rule precedence.
 - [x] Throttle polling. The current game-thread pass can scan up to 1004 SA-MP
   slots per frame; run it roughly every 200 ms while still reapplying a custom
   model as soon as the next poll observes a server-side skin reset.
@@ -14,7 +14,7 @@
 ## Configuration and lifecycle
 
 - [x] Auto-reload `custom_skin_loader.json` without restarting GTA. New
-  profiles and player mappings become available safely.
+  profiles and matching rules become available safely.
 - [x] Support live skin-profile replacement when its TXD path, DFF path, or
   donor model changes. Build a replacement into a fresh private model slot and
   move every assigned streamed-in ped to it on the game thread. Superseded
@@ -23,7 +23,7 @@
   unchanged. Compare modification time and file length about once per second,
   then rebuild the affected skin and move configured local/remote players to
   the replacement model.
-- [x] Support profile or assignment removal. Restore every affected streamed-in
+- [x] Support profile or matching-rule removal. Restore every affected streamed-in
   ped to the most recently observed normal server model. Track that model when
   SA-MP changes a ped away from a loader-owned private model.
 - [x] Safely clean obsolete private skin resources. After all live SA-MP peds
@@ -33,9 +33,11 @@
 - [ ] Stress-test repeated live reloads and profile removals, including shared
   skins and streamed-out remote players, to verify that private model/TXD
   counts remain stable.
-- [x] Support toggling an individual player or skin profile on and off.
-- [ ] Preserve and document the first-run behavior: create a missing
-  `custom_skin_loader.json` as `{}` and remain idle until a player mapping exists.
+- [x] Support toggling an individual matching rule or skin profile on and off.
+- [x] Preserve and document the first-run behavior: create a missing
+  `custom_skin_loader.json` as `{}` and remain idle until a matching rule exists.
+- [x] Add prioritized matching rules for player names and server model IDs:
+  combined rules win over player-only rules, which win over model-only rules.
 
 ## Compatibility and safety
 

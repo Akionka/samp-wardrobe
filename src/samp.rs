@@ -1,5 +1,4 @@
 use crate::memory;
-use std::collections::HashSet;
 use std::ffi::c_void;
 use std::thread;
 use std::time::Duration;
@@ -46,9 +45,9 @@ impl Samp {
         self.base
     }
 
-    pub unsafe fn configured_peds(&self, tracked_names: &HashSet<String>) -> Vec<StreamedPed> {
-        let mut peds = unsafe { self.configured_remote_peds(tracked_names) };
-        if let Some(local_player) = unsafe { self.configured_local_ped(tracked_names) } {
+    pub unsafe fn streamed_peds(&self) -> Vec<StreamedPed> {
+        let mut peds = unsafe { self.streamed_remote_peds() };
+        if let Some(local_player) = unsafe { self.streamed_local_ped() } {
             peds.push(local_player);
         }
         peds
@@ -111,12 +110,9 @@ impl Samp {
         (player_pool != 0).then_some(player_pool)
     }
 
-    unsafe fn configured_local_ped(&self, tracked_names: &HashSet<String>) -> Option<StreamedPed> {
+    unsafe fn streamed_local_ped(&self) -> Option<StreamedPed> {
         let player_pool = unsafe { self.player_pool()? };
         let name = unsafe { read_msvc_string(player_pool, PLAYER_POOL_LOCAL_NAME)? };
-        if !tracked_names.contains(&name) {
-            return None;
-        }
 
         let local_player_address = player_pool.checked_add(PLAYER_POOL_LOCAL_PLAYER)?;
         let local_player: usize = unsafe { memory::read(local_player_address)? };
@@ -134,7 +130,7 @@ impl Samp {
         (!address.is_null()).then_some(StreamedPed { name, address })
     }
 
-    unsafe fn configured_remote_peds(&self, tracked_names: &HashSet<String>) -> Vec<StreamedPed> {
+    unsafe fn streamed_remote_peds(&self) -> Vec<StreamedPed> {
         let Some(player_pool) = (unsafe { self.player_pool() }) else {
             return Vec::new();
         };
@@ -167,9 +163,6 @@ impl Samp {
             let Some(name) = (unsafe { remote_player_name(remote) }) else {
                 continue;
             };
-            if !tracked_names.contains(&name) {
-                continue;
-            }
 
             if let Some(address) = unsafe { remote_gta_ped(remote) } {
                 matches.push(StreamedPed { name, address });

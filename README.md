@@ -49,7 +49,7 @@ copying `custom_skin_loader.example.json` from this repository, then adjust the 
 paths:
 
 On first run, the loader creates a missing `custom_skin_loader.json` as an
-empty `{}` file and remains idle until you add at least one profile.
+empty `{}` file and remains idle until you add at least one matching rule.
 
 ```json
 {
@@ -61,49 +61,52 @@ empty `{}` file and remains idle until you add at least one profile.
       "donor_model_id": 7
     }
   },
-  "players": {
-    "Jacob_Spencer": {
-      "skin_id": "jacob_spencer",
+  "rules": [
+    {
+      "profile_id": "jacob_spencer",
+      "player_name": "Jacob_Spencer",
       "enabled": true
     },
-    "Jacob_Alt": {
-      "skin_id": "jacob_spencer",
+    {
+      "profile_id": "jacob_spencer",
+      "server_model_id": 67,
       "enabled": true
     }
-  }
+  ]
 }
 ```
 
 - `skins` maps a skin ID to its asset paths and donor model ID.
-- `players` maps an exact, case-sensitive SA-MP nickname to a skin assignment.
-- Both skin profiles and player assignments have an `enabled` flag, which
-  defaults to `true` when omitted. Disabling either one restores the affected
-  streamed-in ped to its server model without removing the saved entry.
-- For backward compatibility, a player may still use the original compact
-  mapping, such as `"Jacob_Spencer": "jacob_spencer"`; it is treated as an
-  enabled assignment.
+- `rules` maps a profile to one or both matching conditions:
+  `player_name` is an exact, case-sensitive SA-MP nickname, and
+  `server_model_id` is the normal GTA model ID supplied by the server.
+- Both skin profiles and rules have an `enabled` flag, which defaults to `true`
+  when omitted. Disabling a rule or its profile excludes it from matching
+  without removing the saved entry; the next matching rule, or the server model
+  when none remains, is used instead.
+- A rule must specify at least one condition. The loader resolves matches in
+  this order: player name + server model, player name only, then server model
+  only. Two rules with identical conditions are invalid.
 - `txd_path` and `dff_path` are relative to the GTA installation directory.
 - `donor_model_id` is a normal GTA ped model whose metadata is used to
   initialize a new private slot. `7` is the currently tested default.
 
-Skins are loaded only when an assigned player is streamed in. Each active skin
-generation receives one private GTA model ID that every mapped player shares,
-so multiple configured players can use one skin without duplicating it or
-affecting ordinary game models.
+Skins are loaded only when a matching player is streamed in. Each active skin
+generation receives one private GTA model ID that every matching player shares,
+so multiple rules can use one skin without duplicating it or affecting ordinary
+game models.
 
 The loader notices saved changes to `custom_skin_loader.json` within about one
-second. You can add profiles, enable or disable profiles and assignments,
-change player-to-skin mappings, or change a profile's TXD path, DFF path, or
-donor while GTA is running. It also checks the loaded TXD and DFF files about
-once per second. A changed profile or asset is loaded into a fresh private
-model slot and every matching streamed-in ped moves to it on the next poll.
+second. You can add profiles, enable or disable profiles and rules, change
+matching conditions, or change a profile's TXD path, DFF path, or donor while
+GTA is running. It also checks the loaded TXD and DFF files about once per
+second. A changed profile or asset is loaded into a fresh private model slot
+and every matching streamed-in ped moves to it on the next poll.
 
-Removing a player assignment or skin profile restores an affected streamed-in
-ped to the last normal model observed from SA-MP. A player mapping whose skin
-profile was removed is treated as disabled, which makes it practical to edit a
-profile and its assignments in separate saves. Invalid JSON or a failed asset
-reload leaves the last working configuration/model active and reports the
-error in `custom_skin_loader.log`.
+Removing a matching rule or skin profile restores an affected streamed-in ped
+to the last normal model observed from SA-MP. Invalid JSON or a failed asset
+reload leaves the last working configuration/model active and reports the error
+in `custom_skin_loader.log`.
 
 After a profile is replaced or becomes unassigned, the loader waits one second
 and confirms that no live SA-MP ped still uses its old private model. It then
@@ -118,7 +121,7 @@ incomplete, cleanup is postponed rather than risking a dangling model.
 MoonLoader `mimgui` front-end for the same JSON configuration. It does not
 communicate with the Rust ASI directly: it edits `custom_skin_loader.json`,
 which the ASI then reloads automatically. In-game, use `/skins` to open the
-editor. Profile and player-assignment changes are staged until **Save JSON** is
+editor. Profile and matching-rule changes are staged until **Save JSON** is
 pressed.
 
 Deploy the Lua script separately with:
