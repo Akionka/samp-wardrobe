@@ -32,7 +32,9 @@ const ADDR_RWSTREAMCLOSE: usize = 0x7ECE20;
 // TXD store functions.
 const ADDR_CTXDSTORE_ADD_TXD_SLOT: usize = 0x731C80;
 const ADDR_CTXDSTORE_LOAD_TXD: usize = 0x7320B0;
-const ADDR_CTXDSTORE_ADD_REF: usize = 0x731A30;
+const ADDR_CTXDSTORE_ADD_REF: usize = 0x731A00;
+const ADDR_CTXDSTORE_REMOVE_REF: usize = 0x731A30;
+const ADDR_CTXDSTORE_REMOVE_TXD_SLOT: usize = 0x731CD0;
 const ADDR_CTXDSTORE_PUSHCURRENTTXD: usize = 0x7316A0;
 const ADDR_CTXDSTORE_POPCURRENTTXD: usize = 0x7316B0;
 const ADDR_CTXDSTORE_SETCURRENTTXD: usize = 0x7319C0;
@@ -63,8 +65,10 @@ const MODEL_INFO_FLAGS: usize = 0x12;
 const MODEL_INFO_RW_OBJECT: usize = 0x1C;
 const MODEL_INFO_COPY_START: usize = 0x0C;
 const PED_MODEL_INFO_SIZE: usize = 0x44;
+const PED_MODEL_INFO_HIT_COL_MODEL: usize = 0x34;
 const MODEL_FLAG_OWNS_COLLISION: u16 = 1 << 5;
 const ENTITY_MODEL_INDEX: usize = 0x22;
+const VTABLE_DELETE_RW_OBJECT_OFFSET: usize = 0x20;
 
 // RenderWare enums/chunk ID.
 const RWSTREAM_FILENAME: i32 = 2;
@@ -77,6 +81,7 @@ const CONFIG_PATH: &str = "custom_skin_loader.json";
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(1);
 const ASSET_RELOAD_INTERVAL: Duration = Duration::from_secs(1);
+const RETIRED_MODEL_GRACE_PERIOD: Duration = Duration::from_secs(1);
 
 type GameProcessFn = unsafe extern "cdecl" fn();
 
@@ -112,7 +117,21 @@ struct SkinSourceRevision {
 #[derive(Clone, Debug)]
 struct LoadedSkin {
     model_id: i32,
+    txd_slot: i32,
     source: SkinSourceRevision,
+}
+
+#[derive(Clone, Debug)]
+struct RetiredSkin {
+    skin_id: String,
+    model_id: i32,
+    txd_slot: i32,
+    retired_at: Instant,
+}
+
+#[derive(Debug)]
+struct SkinLoadFailure {
+    recyclable_model_id: Option<i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -131,6 +150,8 @@ struct LoaderRuntime {
     // path exists. Keeping this complete set prevents an older custom slot
     // from being mistaken for a server-supplied model during a replacement.
     private_model_ids: HashSet<i32>,
+    retired_skins: Vec<RetiredSkin>,
+    recyclable_model_ids: HashSet<i32>,
     failed_profiles: HashMap<String, SkinSourceRevision>,
     matched_players: HashSet<String>,
     applied_players: HashMap<String, AppliedPlayer>,
@@ -230,6 +251,73 @@ unsafe fn set_ped_model_clump(model_info: *mut c_void, clump: *mut c_void) {
     unsafe { function(model_info, clump) };
 }
 
+/// Calls CBaseModelInfo's virtual DeleteRwObject implementation. For a ped
+/// model this is CPedModelInfo::DeleteRwObject, which destroys the source
+/// RenderWare clump. CStreaming::RemoveModel uses this same vtable slot.
+unsafe fn delete_model_rw_object(model_info: *mut c_void) -> bool {
+    if model_info.is_null() {
+        return false;
+    }
+
+    let rw_object_address = model_info as usize + MODEL_INFO_RW_OBJECT;
+    let Some(rw_object): Option<*mut c_void> = (unsafe { try_read_mem(rw_object_address) }) else {
+        return false;
+    };
+    if rw_object.is_null() {
+        return true;
+    }
+
+    let Some(vtable): Option<usize> = (unsafe { try_read_mem(model_info as usize) }) else {
+        return false;
+    };
+    let Some(function_address): Option<usize> =
+        (unsafe { try_read_mem(vtable + VTABLE_DELETE_RW_OBJECT_OFFSET) })
+    else {
+        return false;
+    };
+    if function_address == 0 {
+        return false;
+    }
+
+    type DeleteRwObject = unsafe extern "thiscall" fn(*mut c_void);
+    let function: DeleteRwObject = unsafe { std::mem::transmute(function_address) };
+    unsafe { function(model_info) };
+    true
+}
+
+unsafe fn remove_txd_slot(txd_slot: i32, has_reference: bool) {
+    if has_reference {
+        // CTxdStore::RemoveRef destroys the dictionary when this was the last
+        // reference. RemoveTxdSlot then releases the now-empty pool entry.
+        unsafe { call_cdecl_1::<(), i32>(ADDR_CTXDSTORE_REMOVE_REF, txd_slot) };
+    }
+    unsafe { call_cdecl_1::<(), i32>(ADDR_CTXDSTORE_REMOVE_TXD_SLOT, txd_slot) };
+}
+
+unsafe fn release_skin_resources(skin_id: &str, model_id: i32, txd_slot: i32) -> bool {
+    let model_info = unsafe { get_model_info(model_id) };
+    if model_info.is_null() {
+        log::error!("skin {skin_id}: private model {model_id} disappeared before cleanup");
+        return false;
+    }
+    if !unsafe { delete_model_rw_object(model_info) } {
+        log::error!(
+            "skin {skin_id}: could not destroy RenderWare clump for private model {model_id}"
+        );
+        return false;
+    }
+
+    unsafe { remove_txd_slot(txd_slot, true) };
+    // Keep the CPedModelInfo allocation valid but inert. Its ID can now be
+    // reused by this loader without allocating another entry from GTA's fixed
+    // ped-model-info array.
+    unsafe {
+        *((model_info as usize + MODEL_INFO_TXD_INDEX) as *mut i16) = -1;
+    }
+    log::info!("cleaned retired skin {skin_id}: private model={model_id}, txd_slot={txd_slot}");
+    true
+}
+
 unsafe fn load_dff_clump(txd_slot: i32, dff_path: &str) -> Option<*mut c_void> {
     let dff_path_c = match CString::new(dff_path) {
         Ok(path) => path,
@@ -291,21 +379,30 @@ unsafe fn load_dff_clump(txd_slot: i32, dff_path: &str) -> Option<*mut c_void> {
 }
 
 /// Loads one configured TXD/DFF pair into a private ped slot cloned from its
-/// configured vanilla donor model.
-unsafe fn load_custom_skin(skin_id: &str, definition: &SkinDefinition) -> Option<i32> {
+/// configured vanilla donor model. A recycled slot keeps its CPedModelInfo
+/// allocation but has no RenderWare object or TXD attached.
+unsafe fn load_custom_skin(
+    skin_id: &str,
+    definition: &SkinDefinition,
+    recycled_model_id: Option<i32>,
+) -> Result<LoadedSkin, SkinLoadFailure> {
     if !Path::new(&definition.txd_path).is_file() {
         log::error!(
             "skin {skin_id}: TXD file does not exist or is not a file: {}",
             definition.txd_path
         );
-        return None;
+        return Err(SkinLoadFailure {
+            recyclable_model_id: recycled_model_id,
+        });
     }
     if !Path::new(&definition.dff_path).is_file() {
         log::error!(
             "skin {skin_id}: DFF file does not exist or is not a file: {}",
             definition.dff_path
         );
-        return None;
+        return Err(SkinLoadFailure {
+            recyclable_model_id: recycled_model_id,
+        });
     }
 
     log::info!(
@@ -315,7 +412,17 @@ unsafe fn load_custom_skin(skin_id: &str, definition: &SkinDefinition) -> Option
         definition.dff_path
     );
 
-    let model_id = unsafe { find_free_model_id()? };
+    let model_id = match recycled_model_id {
+        Some(model_id) => model_id,
+        None => match unsafe { find_free_model_id() } {
+            Some(model_id) => model_id,
+            None => {
+                return Err(SkinLoadFailure {
+                    recyclable_model_id: None,
+                });
+            }
+        },
+    };
     let txd_name = CString::new(format!("csl_{model_id}")).unwrap();
     let txd_path = match CString::new(definition.txd_path.as_str()) {
         Ok(path) => path,
@@ -324,14 +431,18 @@ unsafe fn load_custom_skin(skin_id: &str, definition: &SkinDefinition) -> Option
                 "skin {skin_id}: TXD path contains a NUL byte: {:?}",
                 definition.txd_path
             );
-            return None;
+            return Err(SkinLoadFailure {
+                recyclable_model_id: recycled_model_id,
+            });
         }
     };
 
     let txd_slot: i32 = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_TXD_SLOT, txd_name.as_ptr()) };
     if txd_slot < 0 {
         log::error!("skin {skin_id}: could not allocate a TXD slot");
-        return None;
+        return Err(SkinLoadFailure {
+            recyclable_model_id: recycled_model_id,
+        });
     }
 
     let loaded: u8 = unsafe { call_cdecl_2(ADDR_CTXDSTORE_LOAD_TXD, txd_slot, txd_path.as_ptr()) };
@@ -340,7 +451,10 @@ unsafe fn load_custom_skin(skin_id: &str, definition: &SkinDefinition) -> Option
             "skin {skin_id}: could not load TXD from {} into slot {txd_slot}",
             definition.txd_path
         );
-        return None;
+        unsafe { remove_txd_slot(txd_slot, false) };
+        return Err(SkinLoadFailure {
+            recyclable_model_id: recycled_model_id,
+        });
     }
     let _: *mut c_void = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_REF, txd_slot) };
 
@@ -350,18 +464,39 @@ unsafe fn load_custom_skin(skin_id: &str, definition: &SkinDefinition) -> Option
             "GTA donor ped model {} is not available for skin {skin_id}",
             definition.donor_model_id
         );
-        return None;
+        unsafe { remove_txd_slot(txd_slot, true) };
+        return Err(SkinLoadFailure {
+            recyclable_model_id: recycled_model_id,
+        });
     }
 
-    let model_info: *mut c_void = unsafe { call_cdecl_1(ADDR_CMODELINFO_ADD_PED_MODEL, model_id) };
+    let model_info: *mut c_void = match recycled_model_id {
+        Some(_) => unsafe { get_model_info(model_id) },
+        None => unsafe { call_cdecl_1(ADDR_CMODELINFO_ADD_PED_MODEL, model_id) },
+    };
     if model_info.is_null() {
-        log::error!("skin {skin_id}: CModelInfo::AddPedModel({model_id}) failed");
-        return None;
+        log::error!("skin {skin_id}: could not prepare private model {model_id}");
+        unsafe { remove_txd_slot(txd_slot, true) };
+        return Err(SkinLoadFailure {
+            recyclable_model_id: recycled_model_id,
+        });
     }
 
     unsafe { clone_ped_model_metadata(model_info, donor_model_info, txd_slot) };
 
-    let clump = unsafe { load_dff_clump(txd_slot, &definition.dff_path)? };
+    let clump = match unsafe { load_dff_clump(txd_slot, &definition.dff_path) } {
+        Some(clump) => clump,
+        None => {
+            let _ = unsafe { delete_model_rw_object(model_info) };
+            unsafe { remove_txd_slot(txd_slot, true) };
+            unsafe {
+                *((model_info as usize + MODEL_INFO_TXD_INDEX) as *mut i16) = -1;
+            }
+            return Err(SkinLoadFailure {
+                recyclable_model_id: Some(model_id),
+            });
+        }
+    };
     // This does ped-specific clump setup; never write m_pRwClump directly.
     unsafe { set_ped_model_clump(model_info, clump) };
 
@@ -371,7 +506,11 @@ unsafe fn load_custom_skin(skin_id: &str, definition: &SkinDefinition) -> Option
         definition.txd_path,
         definition.dff_path
     );
-    Some(model_id)
+    Ok(LoadedSkin {
+        model_id,
+        txd_slot,
+        source: skin_source_revision(definition),
+    })
 }
 
 /// Copies the safe, initialized portion of a vanilla CPedModelInfo into a new
@@ -394,6 +533,12 @@ unsafe fn clone_ped_model_metadata(destination: *mut c_void, donor: *mut c_void,
         // must not free it during GTA shutdown.
         let flags = (destination as usize + MODEL_INFO_FLAGS) as *mut u16;
         *flags &= !MODEL_FLAG_OWNS_COLLISION;
+
+        // CPedModelInfo owns a separate, generated hit-collision model. Do
+        // not inherit the donor's pointer: SetClump creates one for this skin
+        // and DeleteRwObject later destroys only that private allocation.
+        *((destination as usize + PED_MODEL_INFO_HIT_COL_MODEL) as *mut *mut c_void) =
+            std::ptr::null_mut();
 
         // CBaseModelInfo::m_nTxdIndex is a signed short at +0x0A.
         *((destination as usize + MODEL_INFO_TXD_INDEX) as *mut i16) = txd_slot as i16;
@@ -537,6 +682,45 @@ unsafe fn configured_remote_peds(
     }
 
     matches
+}
+
+/// Returns the model IDs of every currently-instanced SA-MP ped. Cleanup only
+/// touches a retired source clump after no live SA-MP ped can still reference
+/// its private model ID.
+unsafe fn live_samp_ped_model_ids(samp_base: usize) -> Option<HashSet<i16>> {
+    let player_pool = unsafe { get_player_pool(samp_base)? };
+    let max_player_id: u32 = unsafe { try_read_mem(player_pool)? };
+    let max_player_id = (max_player_id as usize).min(SAMP_MAX_PLAYERS - 1);
+    let remote_players = player_pool.checked_add(PLAYER_POOL_REMOTE_PLAYERS)?;
+    let remote_players_size = (max_player_id + 1).checked_mul(std::mem::size_of::<u32>())?;
+    let remote_player_entries = try_read_bytes(remote_players, remote_players_size)?;
+    let mut model_ids = HashSet::new();
+
+    for entry in remote_player_entries.chunks_exact(std::mem::size_of::<u32>()) {
+        let remote =
+            u32::from_ne_bytes(entry.try_into().expect("remote player entry has 4 bytes")) as usize;
+        if remote == 0 {
+            continue;
+        }
+        if let Some(ped) = unsafe { remote_gta_ped(remote) } {
+            model_ids.insert(unsafe { ped_model_id(ped)? });
+        }
+    }
+
+    let local_player_address = player_pool.checked_add(PLAYER_POOL_LOCAL_PLAYER)?;
+    let local_player: usize = unsafe { try_read_mem(local_player_address)? };
+    if local_player != 0 {
+        let samp_ped: usize = unsafe { try_read_mem(local_player)? };
+        if samp_ped != 0 {
+            let gta_ped_address = samp_ped.checked_add(SAMP_PED_GTA_PED)?;
+            let gta_ped: *mut c_void = unsafe { try_read_mem(gta_ped_address)? };
+            if !gta_ped.is_null() {
+                model_ids.insert(unsafe { ped_model_id(gta_ped)? });
+            }
+        }
+    }
+
+    Some(model_ids)
 }
 
 unsafe fn ped_model_id(ped: *mut c_void) -> Option<i16> {
@@ -701,10 +885,34 @@ fn reload_skin_config_if_changed() {
 
     let skin_count = candidate.skins.len();
     let player_count = candidate.players.len();
+    let referenced_skins = candidate
+        .players
+        .values()
+        .filter(|skin_id| candidate.skins.contains_key(*skin_id))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let no_longer_needed = state
+        .loaded_models
+        .keys()
+        .filter(|skin_id| !referenced_skins.contains(*skin_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    for skin_id in no_longer_needed {
+        let loaded = state
+            .loaded_models
+            .remove(&skin_id)
+            .expect("loaded skin disappeared while scheduling cleanup");
+        state.retired_skins.push(RetiredSkin {
+            skin_id,
+            model_id: loaded.model_id,
+            txd_slot: loaded.txd_slot,
+            retired_at: Instant::now(),
+        });
+    }
     *current = candidate;
     // A corrected asset path or a newly added profile should be allowed to load
     // on the next matching poll. Changed profiles are rebuilt into fresh
-    // private slots; old slots remain alive until GTA exits.
+    // private slots; unreferenced profiles are queued for game-thread cleanup.
     state.failed_profiles.clear();
     state.matched_players.clear();
     log::info!("reloaded {CONFIG_PATH}: {skin_count} skin(s), {player_count} player mapping(s)");
@@ -757,24 +965,41 @@ unsafe fn model_for_skin(skin_id: &str, definition: &SkinDefinition) -> Option<i
         }
     }
 
-    let model_id = unsafe { load_custom_skin(skin_id, definition) };
+    let recycled_model_id = {
+        let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        let recycled_model_id = state.recyclable_model_ids.iter().next().copied();
+        if let Some(model_id) = recycled_model_id {
+            state.recyclable_model_ids.remove(&model_id);
+        }
+        recycled_model_id
+    };
+    let loaded_skin = unsafe { load_custom_skin(skin_id, definition, recycled_model_id) };
     let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
-    match model_id {
-        Some(model_id) => {
-            let replaced_model = state
-                .loaded_models
-                .insert(skin_id.to_owned(), LoadedSkin { model_id, source });
+    match loaded_skin {
+        Ok(mut loaded_skin) => {
+            loaded_skin.source = source;
+            let model_id = loaded_skin.model_id;
+            let replaced_model = state.loaded_models.insert(skin_id.to_owned(), loaded_skin);
             state.private_model_ids.insert(model_id);
             state.failed_profiles.remove(skin_id);
             if let Some(previous) = replaced_model {
+                state.retired_skins.push(RetiredSkin {
+                    skin_id: skin_id.to_owned(),
+                    model_id: previous.model_id,
+                    txd_slot: previous.txd_slot,
+                    retired_at: Instant::now(),
+                });
                 log::info!(
-                    "replaced skin {skin_id}: private model {} -> {model_id}; old resources stay loaded until GTA exits",
+                    "replaced skin {skin_id}: private model {} -> {model_id}; queued old resources for cleanup",
                     previous.model_id
                 );
             }
             Some(model_id)
         }
-        None => {
+        Err(failure) => {
+            if let Some(model_id) = failure.recyclable_model_id {
+                state.recyclable_model_ids.insert(model_id);
+            }
             state.failed_profiles.insert(skin_id.to_owned(), source);
             if let Some(loaded) = state.loaded_models.get(skin_id) {
                 log::error!(
@@ -836,6 +1061,57 @@ unsafe fn restore_server_model_for_removed_assignment(name: &str, ped: *mut c_vo
     state.matched_players.remove(name);
 }
 
+unsafe fn cleanup_retired_skins(samp_base: usize) {
+    let runtime = LOADER_RUNTIME.get_or_init(|| Mutex::new(LoaderRuntime::default()));
+    let has_retired_skins = {
+        let state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        !state.retired_skins.is_empty()
+    };
+    if !has_retired_skins {
+        return;
+    }
+
+    // A failed safe read means we cannot prove that every ped has detached.
+    // Keep the retired resources intact and try again on a later poll.
+    let Some(live_model_ids) = (unsafe { live_samp_ped_model_ids(samp_base) }) else {
+        log::debug!("deferred retired-skin cleanup because the SA-MP ped scan was incomplete");
+        return;
+    };
+
+    let now = Instant::now();
+    let ready_for_cleanup = {
+        let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        let mut ready = Vec::new();
+        state.retired_skins.retain(|retired| {
+            let still_in_use = live_model_ids.contains(&(retired.model_id as i16));
+            let old_enough = now.duration_since(retired.retired_at) >= RETIRED_MODEL_GRACE_PERIOD;
+            if still_in_use || !old_enough {
+                true
+            } else {
+                ready.push(retired.clone());
+                false
+            }
+        });
+        ready
+    };
+
+    for retired in ready_for_cleanup {
+        if unsafe { release_skin_resources(&retired.skin_id, retired.model_id, retired.txd_slot) } {
+            let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+            state.private_model_ids.remove(&retired.model_id);
+            state.recyclable_model_ids.insert(retired.model_id);
+        } else {
+            // Do not recycle a model whose old clump or TXD could still be
+            // alive. A later game-thread pass will retry from the safe state.
+            let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+            state.retired_skins.push(RetiredSkin {
+                retired_at: now,
+                ..retired
+            });
+        }
+    }
+}
+
 unsafe fn process_skin_loader_on_game_thread() {
     // The hook runs every GTA frame, but scanning a 1004-slot SA-MP pool does
     // not need to. Five polls per second keeps skin changes responsive without
@@ -875,6 +1151,7 @@ unsafe fn process_skin_loader_on_game_thread() {
             .collect::<HashSet<_>>()
     };
     if tracked_names.is_empty() {
+        unsafe { cleanup_retired_skins(samp_base) };
         return;
     }
 
@@ -949,6 +1226,8 @@ unsafe fn process_skin_loader_on_game_thread() {
             );
         }
     }
+
+    unsafe { cleanup_retired_skins(samp_base) };
 }
 
 unsafe extern "cdecl" fn game_process_detour() {

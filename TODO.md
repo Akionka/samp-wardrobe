@@ -26,10 +26,13 @@
 - [x] Support profile or assignment removal. Restore every affected streamed-in
   ped to the most recently observed normal server model. Track that model when
   SA-MP changes a ped away from a loader-owned private model.
-- [ ] Define and implement safe cleanup for obsolete private model slots, TXD
-  references, and clumps. Confirm the GTA/RW destruction order, reference
-  counts, and model-slot reuse before allowing private IDs to be recycled.
-- [ ] Add a user-facing reload control, such as a chat command or hotkey.
+- [x] Safely clean obsolete private skin resources. After all live SA-MP peds
+  have detached, destroy the model's RenderWare object, release/remove its TXD
+  slot, and recycle the inert CPedModelInfo entry without returning it to GTA's
+  global model-info table.
+- [ ] Stress-test repeated live reloads and profile removals, including shared
+  skins and streamed-out remote players, to verify that private model/TXD
+  counts remain stable.
 - [ ] Support toggling an individual player or skin profile on and off.
 - [ ] Preserve and document the first-run behavior: create a missing
   `custom_skin_loader.json` as `{}` and remain idle until a player mapping exists.

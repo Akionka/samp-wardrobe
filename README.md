@@ -92,9 +92,12 @@ profile and its assignments in separate saves. Invalid JSON or a failed asset
 reload leaves the last working configuration/model active and reports the
 error in `custom_skin_loader.log`.
 
-For safety, superseded private model slots, TXD slots, and RenderWare clumps
-remain allocated until GTA exits. Repeated live reloads can therefore exhaust
-the loader's private model-ID range; safe in-session cleanup is still pending.
+After a profile is replaced or becomes unassigned, the loader waits one second
+and confirms that no live SA-MP ped still uses its old private model. It then
+destroys the retired RenderWare clump and releases its TXD slot. The empty GTA
+ped-model entry is retained and recycled by the loader, avoiding repeated
+allocation from GTA's fixed ped-model-info array. If the safe SA-MP scan is
+incomplete, cleanup is postponed rather than risking a dangling model.
 
 ## Build and deploy
 
