@@ -46,8 +46,8 @@
   instead of risking an invalid memory access.
 - [ ] Review compatibility with Fastman92 Limit Adjuster and other common ASI
   plugins, especially model-info pointer handling and private model ID limits.
-- [ ] Define cleanup behavior for game shutdown/restart and streamed-out
-  players.
+- [x] Prune applied and matched player state after a complete SA-MP scan when
+  a player streams out.
 
 ## Future event-driven detection
 

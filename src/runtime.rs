@@ -1,6 +1,6 @@
 use crate::config::{CONFIG_PATH, ConfigWatcher, SkinConfig};
 use crate::gta;
-use crate::samp::{Samp, StreamedPed};
+use crate::samp::{PlayerId, Samp, StreamedPed};
 use crate::skin_loader::SkinManager;
 use retour::GenericDetour;
 use std::collections::{HashMap, HashSet};
@@ -27,8 +27,8 @@ struct Runtime {
     config_watcher: ConfigWatcher,
     skins: SkinManager,
     samp: Samp,
-    matched_players: HashSet<String>,
-    applied_players: HashMap<String, AppliedPlayer>,
+    matched_players: HashSet<PlayerId>,
+    applied_players: HashMap<PlayerId, AppliedPlayer>,
     last_poll: Option<Instant>,
 }
 
@@ -65,41 +65,75 @@ impl Runtime {
             return;
         }
 
-        let streamed_peds = unsafe { self.samp.streamed_peds() };
-        for StreamedPed { name, address } in streamed_peds {
+        let Some(streamed_peds) = (unsafe { self.samp.streamed_peds() }) else {
+            unsafe { self.cleanup_retired_skins() };
+            return;
+        };
+        let streamed_player_ids = streamed_peds
+            .iter()
+            .map(|ped| ped.player_id)
+            .collect::<HashSet<_>>();
+
+        for StreamedPed {
+            player_id,
+            name,
+            address,
+        } in streamed_peds
+        {
             let Some(current_model_id) = (unsafe { gta::ped_model_id(address) }) else {
                 continue;
             };
 
             let server_model_id = if self.skins.is_private_model(current_model_id) {
                 self.applied_players
-                    .get(&name)
+                    .get(&player_id)
                     .and_then(|applied| applied.last_server_model_id)
             } else {
                 Some(current_model_id)
             };
             let Some(server_model_id) = server_model_id else {
                 unsafe {
-                    self.restore_server_model(&name, address, "losing its remembered server model")
+                    self.restore_server_model(
+                        player_id,
+                        &name,
+                        address,
+                        "losing its remembered server model",
+                    )
                 };
                 continue;
             };
 
             let Some(rule) = self.config.matching_rule(&name, server_model_id).cloned() else {
-                unsafe { self.restore_server_model(&name, address, "having no matching rule") };
+                unsafe {
+                    self.restore_server_model(player_id, &name, address, "having no matching rule")
+                };
                 continue;
             };
             let skin_id = rule.profile_id;
             let Some(definition) = self.config.skins.get(&skin_id).cloned() else {
-                unsafe { self.restore_server_model(&name, address, "removing its skin profile") };
+                unsafe {
+                    self.restore_server_model(
+                        player_id,
+                        &name,
+                        address,
+                        "removing its skin profile",
+                    )
+                };
                 continue;
             };
             if !definition.enabled {
-                unsafe { self.restore_server_model(&name, address, "disabling its skin profile") };
+                unsafe {
+                    self.restore_server_model(
+                        player_id,
+                        &name,
+                        address,
+                        "disabling its skin profile",
+                    )
+                };
                 continue;
             };
 
-            if self.matched_players.insert(name.clone()) {
+            if self.matched_players.insert(player_id) {
                 log::info!("matched {name} with server model {server_model_id} to skin {skin_id}");
             }
             let Some(model_id) = (unsafe { self.skins.model_for(&skin_id, &definition) }) else {
@@ -109,7 +143,7 @@ impl Runtime {
             if current_model_id != model_id as i16 {
                 unsafe { gta::set_ped_model_index(address, model_id) };
                 self.applied_players.insert(
-                    name.clone(),
+                    player_id,
                     AppliedPlayer {
                         skin_id,
                         custom_model_id: model_id,
@@ -120,11 +154,11 @@ impl Runtime {
             } else {
                 let last_server_model_id = self
                     .applied_players
-                    .get(&name)
+                    .get(&player_id)
                     .and_then(|applied| applied.last_server_model_id)
                     .or(Some(server_model_id));
                 self.applied_players.insert(
-                    name.clone(),
+                    player_id,
                     AppliedPlayer {
                         skin_id,
                         custom_model_id: model_id,
@@ -134,6 +168,7 @@ impl Runtime {
             }
         }
 
+        self.prune_streamed_out_players(&streamed_player_ids);
         unsafe { self.cleanup_retired_skins() };
     }
 
@@ -152,6 +187,7 @@ impl Runtime {
 
     unsafe fn restore_server_model(
         &mut self,
+        player_id: PlayerId,
         name: &str,
         ped: *mut std::ffi::c_void,
         reason: &str,
@@ -159,7 +195,7 @@ impl Runtime {
         let Some(current_model_id) = (unsafe { gta::ped_model_id(ped) }) else {
             return;
         };
-        let Some(applied) = self.applied_players.get(name).cloned() else {
+        let Some(applied) = self.applied_players.get(&player_id).cloned() else {
             return;
         };
 
@@ -168,8 +204,8 @@ impl Runtime {
             // SA-MP has already supplied a normal model since the custom
             // mapping was removed. It is newer than our saved value, so leave
             // it alone.
-            self.applied_players.remove(name);
-            self.matched_players.remove(name);
+            self.applied_players.remove(&player_id);
+            self.matched_players.remove(&player_id);
             return;
         }
 
@@ -188,8 +224,25 @@ impl Runtime {
             );
         }
 
-        self.applied_players.remove(name);
-        self.matched_players.remove(name);
+        self.applied_players.remove(&player_id);
+        self.matched_players.remove(&player_id);
+    }
+
+    fn prune_streamed_out_players(&mut self, streamed_player_ids: &HashSet<PlayerId>) {
+        let applied_before = self.applied_players.len();
+        let matched_before = self.matched_players.len();
+        self.applied_players
+            .retain(|player_id, _| streamed_player_ids.contains(player_id));
+        self.matched_players
+            .retain(|player_id| streamed_player_ids.contains(player_id));
+
+        let pruned_applied = applied_before - self.applied_players.len();
+        let pruned_matched = matched_before - self.matched_players.len();
+        if pruned_applied != 0 || pruned_matched != 0 {
+            log::debug!(
+                "pruned {pruned_applied} applied and {pruned_matched} matched player state entries after a complete SA-MP ped scan"
+            );
+        }
     }
 
     unsafe fn cleanup_retired_skins(&mut self) {

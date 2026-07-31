@@ -9,6 +9,7 @@ const SAMP_OFFSET_SAMP_INFO: usize = 0x21A0F8;
 const SAMP_OFFSET_PLAYERS_POOL: usize = 0x3CD;
 const SAMP_POOLS_PLAYER: usize = 0x18;
 const PLAYER_POOL_REMOTE_PLAYERS: usize = 0x2E;
+const PLAYER_POOL_LOCAL_PLAYER_ID: usize = 0x04;
 const PLAYER_POOL_LOCAL_NAME: usize = 0x0A;
 const PLAYER_POOL_LOCAL_PLAYER: usize = 0x22;
 const REMOTE_PLAYER_DATA: usize = 0x00;
@@ -24,7 +25,10 @@ pub struct Samp {
     base: usize,
 }
 
+pub type PlayerId = u16;
+
 pub struct StreamedPed {
+    pub player_id: PlayerId,
     pub name: String,
     pub address: *mut c_void,
 }
@@ -45,20 +49,23 @@ impl Samp {
         self.base
     }
 
-    pub unsafe fn streamed_peds(&self) -> Vec<StreamedPed> {
-        let mut peds = unsafe { self.streamed_remote_peds() };
-        if let Some(local_player) = unsafe { self.streamed_local_ped() } {
+    /// Returns every currently streamed SA-MP ped. `None` means a required
+    /// player-pool entry could not be read, so callers must retain existing
+    /// player state rather than treating the scan as empty.
+    pub unsafe fn streamed_peds(&self) -> Option<Vec<StreamedPed>> {
+        let player_pool = unsafe { self.player_pool()? };
+        let mut peds = unsafe { self.streamed_remote_peds(player_pool)? };
+        if let Some(local_player) = unsafe { self.streamed_local_ped(player_pool)? } {
             peds.push(local_player);
         }
-        peds
+        Some(peds)
     }
 
     /// A successful result means all readable SA-MP ped entries have been
     /// enumerated. Callers should postpone destructive cleanup on failure.
     pub unsafe fn all_peds(&self) -> Option<Vec<*mut c_void>> {
         let player_pool = unsafe { self.player_pool()? };
-        let max_player_id: u32 = unsafe { memory::read(player_pool)? };
-        let max_player_id = (max_player_id as usize).min(SAMP_MAX_PLAYERS - 1);
+        let max_player_id = unsafe { max_player_id(player_pool)? };
         let remote_players = player_pool.checked_add(PLAYER_POOL_REMOTE_PLAYERS)?;
         let remote_players_size = (max_player_id + 1).checked_mul(std::mem::size_of::<u32>())?;
         let remote_player_entries = memory::read_bytes(remote_players, remote_players_size)?;
@@ -71,7 +78,7 @@ impl Samp {
             if remote == 0 {
                 continue;
             }
-            if let Some(ped) = unsafe { remote_gta_ped(remote) } {
+            if let Some(ped) = unsafe { remote_gta_ped(remote)? } {
                 peds.push(ped);
             }
         }
@@ -110,49 +117,49 @@ impl Samp {
         (player_pool != 0).then_some(player_pool)
     }
 
-    unsafe fn streamed_local_ped(&self) -> Option<StreamedPed> {
-        let player_pool = unsafe { self.player_pool()? };
-        let name = unsafe { read_msvc_string(player_pool, PLAYER_POOL_LOCAL_NAME)? };
-
+    unsafe fn streamed_local_ped(&self, player_pool: usize) -> Option<Option<StreamedPed>> {
         let local_player_address = player_pool.checked_add(PLAYER_POOL_LOCAL_PLAYER)?;
         let local_player: usize = unsafe { memory::read(local_player_address)? };
         if local_player == 0 {
+            return Some(None);
+        }
+
+        let player_id_address = player_pool.checked_add(PLAYER_POOL_LOCAL_PLAYER_ID)?;
+        let player_id: PlayerId = unsafe { memory::read(player_id_address)? };
+        if usize::from(player_id) >= SAMP_MAX_PLAYERS {
             return None;
         }
 
         let samp_ped: usize = unsafe { memory::read(local_player)? };
         if samp_ped == 0 {
-            return None;
+            return Some(None);
         }
 
         let gta_ped_address = samp_ped.checked_add(SAMP_PED_GTA_PED)?;
         let address: *mut c_void = unsafe { memory::read(gta_ped_address)? };
-        (!address.is_null()).then_some(StreamedPed { name, address })
+        if address.is_null() {
+            return Some(None);
+        }
+
+        let name = unsafe { read_msvc_string(player_pool, PLAYER_POOL_LOCAL_NAME)? };
+        Some(Some(StreamedPed {
+            player_id,
+            name,
+            address,
+        }))
     }
 
-    unsafe fn streamed_remote_peds(&self) -> Vec<StreamedPed> {
-        let Some(player_pool) = (unsafe { self.player_pool() }) else {
-            return Vec::new();
-        };
-
-        let Some(max_player_id): Option<u32> = (unsafe { memory::read(player_pool) }) else {
-            return Vec::new();
-        };
-        let max_player_id = (max_player_id as usize).min(SAMP_MAX_PLAYERS - 1);
+    unsafe fn streamed_remote_peds(&self, player_pool: usize) -> Option<Vec<StreamedPed>> {
+        let max_player_id = unsafe { max_player_id(player_pool)? };
         let mut matches = Vec::new();
-        let Some(remote_players) = player_pool.checked_add(PLAYER_POOL_REMOTE_PLAYERS) else {
-            return matches;
-        };
-        let Some(remote_players_size) = (max_player_id + 1).checked_mul(std::mem::size_of::<u32>())
-        else {
-            return matches;
-        };
-        let Some(remote_player_entries) = memory::read_bytes(remote_players, remote_players_size)
-        else {
-            return matches;
-        };
+        let remote_players = player_pool.checked_add(PLAYER_POOL_REMOTE_PLAYERS)?;
+        let remote_players_size = (max_player_id + 1).checked_mul(std::mem::size_of::<u32>())?;
+        let remote_player_entries = memory::read_bytes(remote_players, remote_players_size)?;
 
-        for entry in remote_player_entries.chunks_exact(std::mem::size_of::<u32>()) {
+        for (player_id, entry) in remote_player_entries
+            .chunks_exact(std::mem::size_of::<u32>())
+            .enumerate()
+        {
             let remote =
                 u32::from_ne_bytes(entry.try_into().expect("remote player entry has 4 bytes"))
                     as usize;
@@ -160,35 +167,45 @@ impl Samp {
                 continue;
             }
 
-            let Some(name) = (unsafe { remote_player_name(remote) }) else {
+            let Some(address) = (unsafe { remote_gta_ped(remote)? }) else {
                 continue;
             };
-
-            if let Some(address) = unsafe { remote_gta_ped(remote) } {
-                matches.push(StreamedPed { name, address });
-            }
+            let name = unsafe { remote_player_name(remote)? };
+            matches.push(StreamedPed {
+                player_id: player_id as PlayerId,
+                name,
+                address,
+            });
         }
 
-        matches
+        Some(matches)
     }
 }
 
-unsafe fn remote_gta_ped(remote: usize) -> Option<*mut c_void> {
+unsafe fn max_player_id(player_pool: usize) -> Option<usize> {
+    let max_player_id: u32 = unsafe { memory::read(player_pool)? };
+    let max_player_id = usize::try_from(max_player_id).ok()?;
+    (max_player_id < SAMP_MAX_PLAYERS).then_some(max_player_id)
+}
+
+/// `Some(None)` means the remote player is valid but currently has no streamed
+/// GTA ped. `None` means a required pointer could not be read.
+unsafe fn remote_gta_ped(remote: usize) -> Option<Option<*mut c_void>> {
     let remote_data_address = remote.checked_add(REMOTE_PLAYER_DATA)?;
     let remote_data: usize = unsafe { memory::read(remote_data_address)? };
     if remote_data == 0 {
-        return None;
+        return Some(None);
     }
 
     let samp_ped_address = remote_data.checked_add(REMOTE_DATA_SAMP_PED)?;
     let samp_ped: usize = unsafe { memory::read(samp_ped_address)? };
     if samp_ped == 0 {
-        return None;
+        return Some(None);
     }
 
     let gta_ped_address = samp_ped.checked_add(SAMP_PED_GTA_PED)?;
     let gta_ped: *mut c_void = unsafe { memory::read(gta_ped_address)? };
-    (!gta_ped.is_null()).then_some(gta_ped)
+    Some((!gta_ped.is_null()).then_some(gta_ped))
 }
 
 /// Reads an MSVC x86 `std::string` without treating its object storage as a
