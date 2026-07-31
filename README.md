@@ -55,20 +55,33 @@ empty `{}` file and remains idle until you add at least one profile.
 {
   "skins": {
     "jacob_spencer": {
+      "enabled": true,
       "txd_path": "models/myskin.txd",
       "dff_path": "models/myskin.dff",
       "donor_model_id": 7
     }
   },
   "players": {
-    "Jacob_Spencer": "jacob_spencer",
-    "Jacob_Alt": "jacob_spencer"
+    "Jacob_Spencer": {
+      "skin_id": "jacob_spencer",
+      "enabled": true
+    },
+    "Jacob_Alt": {
+      "skin_id": "jacob_spencer",
+      "enabled": true
+    }
   }
 }
 ```
 
 - `skins` maps a skin ID to its asset paths and donor model ID.
-- `players` maps an exact, case-sensitive SA-MP nickname to a skin ID.
+- `players` maps an exact, case-sensitive SA-MP nickname to a skin assignment.
+- Both skin profiles and player assignments have an `enabled` flag, which
+  defaults to `true` when omitted. Disabling either one restores the affected
+  streamed-in ped to its server model without removing the saved entry.
+- For backward compatibility, a player may still use the original compact
+  mapping, such as `"Jacob_Spencer": "jacob_spencer"`; it is treated as an
+  enabled assignment.
 - `txd_path` and `dff_path` are relative to the GTA installation directory.
 - `donor_model_id` is a normal GTA ped model whose metadata is used to
   initialize a new private slot. `7` is the currently tested default.
@@ -79,11 +92,11 @@ so multiple configured players can use one skin without duplicating it or
 affecting ordinary game models.
 
 The loader notices saved changes to `custom_skin_loader.json` within about one
-second. You can add profiles, change player-to-skin mappings, or change a
-profile's TXD path, DFF path, or donor while GTA is running. It also checks the
-loaded TXD and DFF files about once per second. A changed profile or asset is
-loaded into a fresh private model slot and every matching streamed-in ped moves
-to it on the next poll.
+second. You can add profiles, enable or disable profiles and assignments,
+change player-to-skin mappings, or change a profile's TXD path, DFF path, or
+donor while GTA is running. It also checks the loaded TXD and DFF files about
+once per second. A changed profile or asset is loaded into a fresh private
+model slot and every matching streamed-in ped moves to it on the next poll.
 
 Removing a player assignment or skin profile restores an affected streamed-in
 ped to the last normal model observed from SA-MP. A player mapping whose skin

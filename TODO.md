@@ -2,7 +2,7 @@
 
 ## Next priorities
 
-- [ ] Validate the `skins` + `players` JSON schema in-game with a real streamed
+- [x] Validate the `skins` + `players` JSON schema in-game with a real streamed
   player. Confirm one skin can be assigned to multiple player names.
 - [x] Throttle polling. The current game-thread pass can scan up to 1004 SA-MP
   slots per frame; run it roughly every 200 ms while still reapplying a custom
@@ -33,7 +33,7 @@
 - [ ] Stress-test repeated live reloads and profile removals, including shared
   skins and streamed-out remote players, to verify that private model/TXD
   counts remain stable.
-- [ ] Support toggling an individual player or skin profile on and off.
+- [x] Support toggling an individual player or skin profile on and off.
 - [ ] Preserve and document the first-run behavior: create a missing
   `custom_skin_loader.json` as `{}` and remain idle until a player mapping exists.
 

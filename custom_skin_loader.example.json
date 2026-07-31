@@ -1,13 +1,20 @@
 {
   "skins": {
     "jacob_spencer": {
+      "enabled": true,
       "txd_path": "models/myskin.txd",
       "dff_path": "models/myskin.dff",
       "donor_model_id": 7
     }
   },
   "players": {
-    "Jacob_Spencer": "jacob_spencer",
-    "Jacob_Alt": "jacob_spencer"
+    "Jacob_Spencer": {
+      "skin_id": "jacob_spencer",
+      "enabled": true
+    },
+    "Jacob_Alt": {
+      "skin_id": "jacob_spencer",
+      "enabled": true
+    }
   }
 }

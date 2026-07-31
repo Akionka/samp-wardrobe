@@ -37,8 +37,15 @@ impl SkinManager {
         let referenced_skins = config
             .players
             .values()
-            .filter(|skin_id| config.skins.contains_key(*skin_id))
-            .cloned()
+            .filter(|assignment| assignment.is_enabled())
+            .map(|assignment| assignment.skin_id())
+            .filter(|skin_id| {
+                config
+                    .skins
+                    .get(*skin_id)
+                    .is_some_and(|definition| definition.enabled)
+            })
+            .map(str::to_owned)
             .collect::<HashSet<_>>();
         let no_longer_needed = self
             .loaded_models

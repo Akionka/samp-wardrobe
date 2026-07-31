@@ -74,14 +74,23 @@ impl Runtime {
 
         let configured_peds = unsafe { self.samp.configured_peds(&tracked_names) };
         for StreamedPed { name, address } in configured_peds {
-            let Some(skin_id) = self.config.players.get(&name).cloned() else {
-                unsafe { self.restore_server_model_for_removed_assignment(&name, address) };
+            let Some(assignment) = self.config.players.get(&name) else {
+                unsafe { self.restore_server_model(&name, address, "removing its assignment") };
                 continue;
             };
+            if !assignment.is_enabled() {
+                unsafe { self.restore_server_model(&name, address, "disabling its assignment") };
+                continue;
+            };
+            let skin_id = assignment.skin_id().to_owned();
             let Some(definition) = self.config.skins.get(&skin_id).cloned() else {
                 // Keeping this mapping in the JSON is useful while editing. It
                 // simply disables the custom assignment and restores the ped.
-                unsafe { self.restore_server_model_for_removed_assignment(&name, address) };
+                unsafe { self.restore_server_model(&name, address, "removing its skin profile") };
+                continue;
+            };
+            if !definition.enabled {
+                unsafe { self.restore_server_model(&name, address, "disabling its skin profile") };
                 continue;
             };
 
@@ -150,10 +159,11 @@ impl Runtime {
         );
     }
 
-    unsafe fn restore_server_model_for_removed_assignment(
+    unsafe fn restore_server_model(
         &mut self,
         name: &str,
         ped: *mut std::ffi::c_void,
+        reason: &str,
     ) {
         let Some(current_model_id) = (unsafe { gta::ped_model_id(ped) }) else {
             return;
@@ -176,13 +186,13 @@ impl Runtime {
             if current_model_id != server_model_id {
                 unsafe { gta::set_ped_model_index(ped, server_model_id as i32) };
                 log::info!(
-                    "restored server model {server_model_id} for {name} after removing skin {}",
+                    "restored server model {server_model_id} for {name} after {reason} for skin {}",
                     applied.skin_id
                 );
             }
         } else {
             log::warn!(
-                "cannot restore {name} after removing skin {}; no server model was observed",
+                "cannot restore {name} after {reason} for skin {}; no server model was observed",
                 applied.skin_id
             );
         }

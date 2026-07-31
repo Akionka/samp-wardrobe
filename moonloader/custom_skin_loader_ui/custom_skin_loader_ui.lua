@@ -58,8 +58,10 @@ local state = {
   txd_path = new.char[260](),
   dff_path = new.char[260](),
   donor_model_id = new.int(7),
+  profile_enabled = new.bool(true),
   player_name = new.char[64](),
   player_skin_id = new.char[64](),
+  player_enabled = new.bool(true),
   profile_search = new.char[64](),
 }
 
@@ -93,6 +95,20 @@ local function ensure_schema(config)
   if type(config) ~= 'table' then config = {} end
   if type(config.skins) ~= 'table' then config.skins = {} end
   if type(config.players) ~= 'table' then config.players = {} end
+
+  for _, skin in pairs(config.skins) do
+    if type(skin) == 'table' and skin.enabled == nil then
+      skin.enabled = true
+    end
+  end
+  for player_name, assignment in pairs(config.players) do
+    if type(assignment) == 'string' then
+      config.players[player_name] = { skin_id = assignment, enabled = true }
+    elseif type(assignment) == 'table' and assignment.enabled == nil then
+      assignment.enabled = true
+    end
+  end
+
   return config
 end
 
@@ -101,11 +117,14 @@ local function validate_config()
     if skin_id == '' then
       return false, 'A profile has an empty ID.'
     end
-    if type(skin) ~= 'table' or type(skin.txd_path) ~= 'string' or skin.txd_path == '' then
-      return false, 'Profile ' .. skin_id .. ' needs a TXD path.'
+    if type(skin) ~= 'table' or type(skin.enabled) ~= 'boolean' then
+      return false, 'Profile ' .. skin_id .. ' has an invalid enabled flag.'
     end
-    if type(skin.dff_path) ~= 'string' or skin.dff_path == '' then
-      return false, 'Profile ' .. skin_id .. ' needs a DFF path.'
+    if type(skin.txd_path) ~= 'string' or type(skin.dff_path) ~= 'string' then
+      return false, 'Profile ' .. skin_id .. ' has an invalid asset path.'
+    end
+    if skin.enabled and (skin.txd_path == '' or skin.dff_path == '') then
+      return false, 'Enabled profile ' .. skin_id .. ' needs TXD and DFF paths.'
     end
     if type(skin.donor_model_id) ~= 'number'
       or skin.donor_model_id % 1 ~= 0
@@ -115,11 +134,14 @@ local function validate_config()
     end
   end
 
-  for player_name, skin_id in pairs(state.config.players) do
+  for player_name, assignment in pairs(state.config.players) do
     if player_name == '' then
       return false, 'An assignment has an empty player name.'
     end
-    if type(skin_id) ~= 'string' or not state.config.skins[skin_id] then
+    if type(assignment) ~= 'table' or type(assignment.enabled) ~= 'boolean' then
+      return false, 'Player ' .. player_name .. ' has an invalid enabled flag.'
+    end
+    if type(assignment.skin_id) ~= 'string' or not state.config.skins[assignment.skin_id] then
       return false, 'Player ' .. player_name .. ' has no valid profile assignment.'
     end
   end
@@ -138,8 +160,10 @@ local function load_config()
     set_buffer(state.txd_path, '')
     set_buffer(state.dff_path, '')
     state.donor_model_id[0] = 7
+    state.profile_enabled[0] = true
     set_buffer(state.player_name, '')
     set_buffer(state.player_skin_id, '')
+    state.player_enabled[0] = true
     set_buffer(state.profile_search, '')
     set_status('No config file yet. Saving will create it.', false)
     return true
@@ -153,7 +177,14 @@ local function load_config()
     return false
   end
 
+  local previous_config = state.config
   state.config = ensure_schema(decoded)
+  local valid, validation_error = validate_config()
+  if not valid then
+    state.config = previous_config
+    set_status('Could not load custom_skin_loader.json: ' .. validation_error, true)
+    return false
+  end
   state.dirty = false
   state.selected_skin = nil
   state.selected_player = nil
@@ -161,8 +192,10 @@ local function load_config()
   set_buffer(state.txd_path, '')
   set_buffer(state.dff_path, '')
   state.donor_model_id[0] = 7
+  state.profile_enabled[0] = true
   set_buffer(state.player_name, '')
   set_buffer(state.player_skin_id, '')
+  state.player_enabled[0] = true
   set_buffer(state.profile_search, '')
   set_status('Loaded custom_skin_loader.json.', false)
   return true
@@ -218,6 +251,7 @@ local function clear_profile_editor()
   set_buffer(state.txd_path, '')
   set_buffer(state.dff_path, '')
   state.donor_model_id[0] = 7
+  state.profile_enabled[0] = true
 end
 
 local function select_profile(skin_id)
@@ -229,6 +263,7 @@ local function select_profile(skin_id)
   set_buffer(state.txd_path, skin.txd_path)
   set_buffer(state.dff_path, skin.dff_path)
   state.donor_model_id[0] = tonumber(skin.donor_model_id) or 7
+  state.profile_enabled[0] = skin.enabled
 end
 
 local function add_profile()
@@ -240,6 +275,7 @@ local function add_profile()
   end
 
   state.config.skins[skin_id] = {
+    enabled = true,
     txd_path = '',
     dff_path = '',
     donor_model_id = 7,
@@ -268,8 +304,8 @@ local function sync_profile_id()
   state.config.skins[new_skin_id] = state.config.skins[old_skin_id]
   state.config.skins[old_skin_id] = nil
   for player_name, assigned_skin in pairs(state.config.players) do
-    if assigned_skin == old_skin_id then
-      state.config.players[player_name] = new_skin_id
+    if assigned_skin.skin_id == old_skin_id then
+      assigned_skin.skin_id = new_skin_id
     end
   end
   state.selected_skin = new_skin_id
@@ -286,6 +322,7 @@ local function sync_profile_fields()
   skin.txd_path = buffer_value(state.txd_path)
   skin.dff_path = buffer_value(state.dff_path)
   skin.donor_model_id = state.donor_model_id[0]
+  skin.enabled = state.profile_enabled[0]
   state.dirty = true
   set_status('Profile changes are staged. Save JSON to apply them in-game.', false)
 end
@@ -299,7 +336,7 @@ local function delete_selected_profile()
 
   state.config.skins[skin_id] = nil
   for player_name, assigned_skin in pairs(state.config.players) do
-    if assigned_skin == skin_id then
+    if assigned_skin.skin_id == skin_id then
       state.config.players[player_name] = nil
     end
   end
@@ -307,6 +344,7 @@ local function delete_selected_profile()
   state.selected_player = nil
   set_buffer(state.player_name, '')
   set_buffer(state.player_skin_id, '')
+  state.player_enabled[0] = true
   set_buffer(state.profile_search, '')
   state.dirty = true
   set_status('Deleted the profile and its player assignments. Save JSON to apply.', false)
@@ -316,20 +354,31 @@ local function clear_player_editor()
   state.selected_player = nil
   set_buffer(state.player_name, '')
   set_buffer(state.player_skin_id, '')
+  state.player_enabled[0] = true
   set_buffer(state.profile_search, '')
 end
 
 local function select_player(player_name)
+  local assignment = state.config.players[player_name]
+  if not assignment then return end
+
   state.selected_player = player_name
   set_buffer(state.player_name, player_name)
-  set_buffer(state.player_skin_id, state.config.players[player_name])
+  set_buffer(state.player_skin_id, assignment.skin_id)
+  state.player_enabled[0] = assignment.enabled
   set_buffer(state.profile_search, '')
 end
 
 local function add_player_assignment()
-  local skin_ids = sorted_keys(state.config.skins)
-  if #skin_ids == 0 then
-    set_status('Add a profile before creating a player assignment.', true)
+  local skin_id
+  for _, candidate in ipairs(sorted_keys(state.config.skins)) do
+    if state.config.skins[candidate].enabled then
+      skin_id = candidate
+      break
+    end
+  end
+  if not skin_id then
+    set_status('Enable a profile before creating a player assignment.', true)
     return
   end
 
@@ -340,7 +389,7 @@ local function add_player_assignment()
     suffix = suffix + 1
   end
 
-  state.config.players[player_name] = skin_ids[1]
+  state.config.players[player_name] = { skin_id = skin_id, enabled = true }
   select_player(player_name)
   state.dirty = true
   set_status('Added a player assignment. Changes are staged until Save JSON.', false)
@@ -379,7 +428,17 @@ local function sync_player_profile()
     return
   end
 
-  state.config.players[player_name] = skin_id
+  state.config.players[player_name].skin_id = skin_id
+  state.dirty = true
+  set_status('Player assignment is staged. Save JSON to apply it in-game.', false)
+end
+
+local function sync_player_enabled()
+  local player_name = state.selected_player
+  local assignment = player_name and state.config.players[player_name]
+  if not assignment then return end
+
+  assignment.enabled = state.player_enabled[0]
   state.dirty = true
   set_status('Player assignment is staged. Save JSON to apply it in-game.', false)
 end
@@ -403,7 +462,9 @@ local function draw_profiles()
     imgui.Text('Skin profiles')
     imgui.Separator()
     for _, skin_id in ipairs(sorted_keys(state.config.skins)) do
-      if imgui.Selectable(skin_id, state.selected_skin == skin_id) then
+      local skin = state.config.skins[skin_id]
+      local label = skin.enabled and skin_id or skin_id .. ' (disabled)'
+      if imgui.Selectable(label, state.selected_skin == skin_id) then
         select_profile(skin_id)
       end
     end
@@ -421,6 +482,7 @@ local function draw_profiles()
   if input_text('TXD path', state.txd_path) then sync_profile_fields() end
   if input_text('DFF path', state.dff_path) then sync_profile_fields() end
   if input_int('Donor model ID', state.donor_model_id) then sync_profile_fields() end
+  if imgui.Checkbox('Enabled##profile', state.profile_enabled) then sync_profile_fields() end
   imgui.PopItemWidth()
   imgui.EndGroup()
 end
@@ -443,7 +505,9 @@ local function profile_picker()
       if search == '' or skin_id:lower():find(search, 1, true) then
         found_match = true
         local is_selected = selected_skin_id == skin_id
-        if imgui.Selectable(skin_id, is_selected) then
+        local skin = state.config.skins[skin_id]
+        local label = skin.enabled and skin_id or skin_id .. ' (disabled)'
+        if imgui.Selectable(label, is_selected) then
           set_buffer(state.player_skin_id, skin_id)
           set_buffer(state.profile_search, '')
           sync_player_profile()
@@ -464,7 +528,9 @@ local function draw_players()
     imgui.Text('Player assignments')
     imgui.Separator()
     for _, player_name in ipairs(sorted_keys(state.config.players)) do
-      local label = player_name .. ' -> ' .. tostring(state.config.players[player_name])
+      local assignment = state.config.players[player_name]
+      local label = player_name .. ' -> ' .. assignment.skin_id
+      if not assignment.enabled then label = label .. ' (disabled)' end
       if imgui.Selectable(label, state.selected_player == player_name) then
         select_player(player_name)
       end
@@ -482,6 +548,7 @@ local function draw_players()
   if input_text('Player name', state.player_name) then sync_player_name() end
   profile_picker()
   imgui.PopItemWidth()
+  if imgui.Checkbox('Enabled##assignment', state.player_enabled) then sync_player_enabled() end
   imgui.EndGroup()
 end
 
