@@ -13,7 +13,7 @@ specific.
 The custom TXD/DFF loading path works. RenderWare and ped-model operations run
 from GTA's frame thread, avoiding crashes caused by invoking GTA engine code
 from a background thread. Skin profiles are selected by exact SA-MP player name
-from `skins.json`.
+from `custom_skin_loader.json`.
 
 The loader creates a private, unused GTA model ID and initializes it from a
 vanilla ped-model definition before attaching the custom clump. This avoids
@@ -44,12 +44,12 @@ ped skeleton/frame hierarchy. Its material texture names must exist in
 
 ## Skin profiles
 
-Create `skins.json` in the GTA installation directory. Start by copying
-`skins.example.json` from this repository, then adjust the player name and
+Create `custom_skin_loader.json` in the GTA installation directory. Start by
+copying `custom_skin_loader.example.json` from this repository, then adjust the player name and
 paths:
 
-On first run, the loader creates a missing `skins.json` as an empty `{}` file
-and remains idle until you add at least one profile.
+On first run, the loader creates a missing `custom_skin_loader.json` as an
+empty `{}` file and remains idle until you add at least one profile.
 
 ```json
 {

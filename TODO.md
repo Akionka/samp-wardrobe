@@ -13,13 +13,13 @@
 
 ## Configuration and lifecycle
 
-- [ ] Reload `skins.json` without restarting GTA. New profiles should become
+- [ ] Reload `custom_skin_loader.json` without restarting GTA. New profiles should become
   available safely; define and implement safe cleanup for obsolete private
   model slots, TXD references, and clumps before unloading old profiles.
 - [ ] Add a user-facing reload control, such as a chat command or hotkey.
 - [ ] Support toggling an individual player or skin profile on and off.
 - [ ] Preserve and document the first-run behavior: create a missing
-  `skins.json` as `{}` and remain idle until a player mapping exists.
+  `custom_skin_loader.json` as `{}` and remain idle until a player mapping exists.
 
 ## Compatibility and safety
 

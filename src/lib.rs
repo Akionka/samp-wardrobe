@@ -73,7 +73,7 @@ const RW_ID_CLUMP: u32 = 0x10;
 
 const PRIVATE_MODEL_ID_START: i32 = 18_000;
 const PRIVATE_MODEL_ID_END: i32 = 20_000;
-const CONFIG_PATH: &str = "skins.json";
+const CONFIG_PATH: &str = "custom_skin_loader.json";
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 type GameProcessFn = unsafe extern "cdecl" fn();
