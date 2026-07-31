@@ -1,7 +1,4 @@
 # .cargo/config.toml
 
 [build]
-target = "i686-pc-windows-msvc"  # Replace with your target triple
-
-[alias]
-asi = "powershell -Command \"cargo build --release; Copy-Item -Force target/release/my_plugin.dll 'C:/Games/GTA San Andreas/scripts/my_plugin.asi'\""
+target = "i686-pc-windows-msvc"

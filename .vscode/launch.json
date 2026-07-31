@@ -5,15 +5,15 @@
             "name": "Debug Game",
             "type": "lldb", // Или "lldb"
             "request": "launch",
-            "program": "C:/Games/GTASA/gta_sa.exe",
-            "cwd": "C:/Games/GTASA/",
+            "program": "${env:GTA_DIR}/gta_sa.exe",
+            "cwd": "${env:GTA_DIR}",
             "stopAtEntry": false
         },
         {
             "name": "Attach to Game",
             "type": "lldb",
             "request": "attach",
-            "program": "C:/Games/GTASA/gta_sa.exe",
+            "program": "${env:GTA_DIR}/gta_sa.exe",
             "sourceLanguages": [
                 "rust"
             ]
