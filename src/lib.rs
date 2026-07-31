@@ -4,9 +4,14 @@ use simplelog::*;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, c_void};
 use std::fs::{self, File};
+use std::mem::MaybeUninit;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+use winapi::um::memoryapi::ReadProcessMemory;
+use winapi::um::processthreadsapi::GetCurrentProcess;
 use windows_sys::Win32::Foundation::HMODULE;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows_sys::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
@@ -41,9 +46,11 @@ const SAMP_OFFSET_SAMP_INFO: usize = 0x21A0F8;
 const SAMP_OFFSET_PLAYERS_POOL: usize = 0x3CD;
 const SAMP_POOLS_PLAYER: usize = 0x18;
 const PLAYER_POOL_REMOTE_PLAYERS: usize = 0x2E;
+const PLAYER_POOL_LOCAL_NAME: usize = 0x0A;
+const PLAYER_POOL_LOCAL_PLAYER: usize = 0x22;
 const REMOTE_PLAYER_DATA: usize = 0x00;
 const REMOTE_DATA_SAMP_PED: usize = 0x00;
-const SAMP_PED_GTA_PED: usize = 0x44;
+const SAMP_PED_GTA_PED: usize = 0x40;
 const SAMP_MAX_PLAYERS: usize = 1004;
 const REMOTE_PLAYER_NAME: usize = 0x0C;
 const REMOTE_PLAYER_NAME_LENGTH: usize = 0x1C;
@@ -90,6 +97,7 @@ struct SkinConfig {
 struct LoaderRuntime {
     loaded_models: HashMap<String, i32>,
     failed_profiles: HashSet<String>,
+    matched_players: HashSet<String>,
     last_poll: Option<Instant>,
 }
 
@@ -99,9 +107,43 @@ static SAMP_BASE: OnceLock<usize> = OnceLock::new();
 static SKIN_CONFIG: OnceLock<SkinConfig> = OnceLock::new();
 static LOADER_RUNTIME: OnceLock<Mutex<LoaderRuntime>> = OnceLock::new();
 static GAME_PROCESS_HOOK: OnceLock<GenericDetour<GameProcessFn>> = OnceLock::new();
+static DETOUR_ENTRY_LOGGED: AtomicBool = AtomicBool::new(false);
+static DETOUR_TRAMPOLINE_LOGGED: AtomicBool = AtomicBool::new(false);
 
-unsafe fn read_mem<T: Copy>(address: usize) -> T {
-    unsafe { *(address as *const T) }
+/// Copies memory through Windows instead of dereferencing a SA-MP-owned
+/// pointer. A stale or unsupported SA-MP structure then fails the read rather
+/// than raising an access violation on GTA's game thread.
+fn copy_process_memory(address: usize, output: *mut c_void, size: usize) -> bool {
+    if address == 0 || size == 0 || address.checked_add(size).is_none() {
+        return false;
+    }
+
+    let mut bytes_read = 0_usize;
+    let succeeded = unsafe {
+        ReadProcessMemory(
+            GetCurrentProcess(),
+            address as *const winapi::ctypes::c_void,
+            output as *mut winapi::ctypes::c_void,
+            size,
+            &mut bytes_read,
+        )
+    };
+    succeeded != 0 && bytes_read == size
+}
+
+unsafe fn try_read_mem<T: Copy>(address: usize) -> Option<T> {
+    let mut value = MaybeUninit::<T>::uninit();
+    copy_process_memory(
+        address,
+        value.as_mut_ptr().cast::<c_void>(),
+        std::mem::size_of::<T>(),
+    )
+    .then(|| unsafe { value.assume_init() })
+}
+
+fn try_read_bytes(address: usize, size: usize) -> Option<Vec<u8>> {
+    let mut bytes = vec![0_u8; size];
+    copy_process_memory(address, bytes.as_mut_ptr().cast::<c_void>(), size).then_some(bytes)
 }
 
 unsafe fn call_cdecl_0<R>(address: usize) -> R {
@@ -150,7 +192,13 @@ unsafe fn set_ped_model_clump(model_info: *mut c_void, clump: *mut c_void) {
 }
 
 unsafe fn load_dff_clump(txd_slot: i32, dff_path: &str) -> Option<*mut c_void> {
-    let dff_path = CString::new(dff_path).expect("DFF path contains a NUL byte");
+    let dff_path_c = match CString::new(dff_path) {
+        Ok(path) => path,
+        Err(_) => {
+            log::error!("DFF path for TXD slot {txd_slot} contains a NUL byte: {dff_path:?}");
+            return None;
+        }
+    };
 
     // DFF material texture names are resolved against the current TXD.
     unsafe { call_cdecl_0::<()>(ADDR_CTXDSTORE_PUSHCURRENTTXD) };
@@ -161,13 +209,13 @@ unsafe fn load_dff_clump(txd_slot: i32, dff_path: &str) -> Option<*mut c_void> {
             ADDR_RWSTREAMOPEN,
             RWSTREAM_FILENAME,
             RWSTREAM_READ,
-            dff_path.as_ptr(),
+            dff_path_c.as_ptr(),
         )
     };
 
     if stream.is_null() {
         unsafe { call_cdecl_0::<()>(ADDR_CTXDSTORE_POPCURRENTTXD) };
-        log::error!("could not open DFF");
+        log::error!("could not open DFF for TXD slot {txd_slot}: {dff_path}");
         return None;
     }
 
@@ -184,10 +232,14 @@ unsafe fn load_dff_clump(txd_slot: i32, dff_path: &str) -> Option<*mut c_void> {
     };
 
     let clump: *mut c_void = if has_clump.is_null() {
-        log::error!("DFF does not contain a RenderWare clump");
+        log::error!("DFF does not contain a RenderWare clump: {dff_path}");
         std::ptr::null_mut()
     } else {
-        unsafe { call_cdecl_1(ADDR_RPCLUMPSTREAMREAD, stream) }
+        let clump: *mut c_void = unsafe { call_cdecl_1(ADDR_RPCLUMPSTREAMREAD, stream) };
+        if clump.is_null() {
+            log::error!("could not read RenderWare clump from DFF: {dff_path}");
+        }
+        clump
     };
 
     unsafe {
@@ -202,20 +254,53 @@ unsafe fn load_dff_clump(txd_slot: i32, dff_path: &str) -> Option<*mut c_void> {
 /// Loads one configured TXD/DFF pair into a private ped slot cloned from its
 /// configured vanilla donor model.
 unsafe fn load_custom_skin(skin_id: &str, definition: &SkinDefinition) -> Option<i32> {
+    if !Path::new(&definition.txd_path).is_file() {
+        log::error!(
+            "skin {skin_id}: TXD file does not exist or is not a file: {}",
+            definition.txd_path
+        );
+        return None;
+    }
+    if !Path::new(&definition.dff_path).is_file() {
+        log::error!(
+            "skin {skin_id}: DFF file does not exist or is not a file: {}",
+            definition.dff_path
+        );
+        return None;
+    }
+
+    log::info!(
+        "loading skin {skin_id}: donor={}, txd={}, dff={}",
+        definition.donor_model_id,
+        definition.txd_path,
+        definition.dff_path
+    );
+
     let model_id = unsafe { find_free_model_id()? };
     let txd_name = CString::new(format!("csl_{model_id}")).unwrap();
-    let txd_path =
-        CString::new(definition.txd_path.as_str()).expect("TXD path contains a NUL byte");
+    let txd_path = match CString::new(definition.txd_path.as_str()) {
+        Ok(path) => path,
+        Err(_) => {
+            log::error!(
+                "skin {skin_id}: TXD path contains a NUL byte: {:?}",
+                definition.txd_path
+            );
+            return None;
+        }
+    };
 
     let txd_slot: i32 = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_TXD_SLOT, txd_name.as_ptr()) };
     if txd_slot < 0 {
-        log::error!("could not allocate a TXD slot");
+        log::error!("skin {skin_id}: could not allocate a TXD slot");
         return None;
     }
 
     let loaded: u8 = unsafe { call_cdecl_2(ADDR_CTXDSTORE_LOAD_TXD, txd_slot, txd_path.as_ptr()) };
     if loaded == 0 {
-        log::error!("could not load TXD for skin {skin_id}");
+        log::error!(
+            "skin {skin_id}: could not load TXD from {} into slot {txd_slot}",
+            definition.txd_path
+        );
         return None;
     }
     let _: *mut c_void = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_REF, txd_slot) };
@@ -231,7 +316,7 @@ unsafe fn load_custom_skin(skin_id: &str, definition: &SkinDefinition) -> Option
 
     let model_info: *mut c_void = unsafe { call_cdecl_1(ADDR_CMODELINFO_ADD_PED_MODEL, model_id) };
     if model_info.is_null() {
-        log::error!("CModelInfo::AddPedModel({model_id}) failed");
+        log::error!("skin {skin_id}: CModelInfo::AddPedModel({model_id}) failed");
         return None;
     }
 
@@ -242,8 +327,10 @@ unsafe fn load_custom_skin(skin_id: &str, definition: &SkinDefinition) -> Option
     unsafe { set_ped_model_clump(model_info, clump) };
 
     log::info!(
-        "loaded skin {skin_id}: private model={model_id}, donor={}, txd_slot={txd_slot}",
-        definition.donor_model_id
+        "loaded skin {skin_id}: private model={model_id}, donor={}, txd_slot={txd_slot}, txd={}, dff={}",
+        definition.donor_model_id,
+        definition.txd_path,
+        definition.dff_path
     );
     Some(model_id)
 }
@@ -275,17 +362,20 @@ unsafe fn clone_ped_model_metadata(destination: *mut c_void, donor: *mut c_void,
 }
 
 unsafe fn get_player_pool(samp_base: usize) -> Option<usize> {
-    let samp: usize = unsafe { read_mem(samp_base + SAMP_OFFSET_SAMP_INFO) };
+    let samp_address = samp_base.checked_add(SAMP_OFFSET_SAMP_INFO)?;
+    let samp: usize = unsafe { try_read_mem(samp_address)? };
     if samp == 0 {
         return None;
     }
 
-    let pools: usize = unsafe { read_mem(samp + SAMP_OFFSET_PLAYERS_POOL) };
+    let pools_address = samp.checked_add(SAMP_OFFSET_PLAYERS_POOL)?;
+    let pools: usize = unsafe { try_read_mem(pools_address)? };
     if pools == 0 {
         return None;
     }
 
-    let player_pool: usize = unsafe { read_mem(pools + SAMP_POOLS_PLAYER) };
+    let player_pool_address = pools.checked_add(SAMP_POOLS_PLAYER)?;
+    let player_pool: usize = unsafe { try_read_mem(player_pool_address)? };
     if player_pool == 0 {
         return None;
     }
@@ -294,40 +384,74 @@ unsafe fn get_player_pool(samp_base: usize) -> Option<usize> {
 }
 
 unsafe fn remote_gta_ped(remote: usize) -> Option<*mut c_void> {
-    let remote_data: usize = unsafe { read_mem(remote + REMOTE_PLAYER_DATA) };
+    let remote_data_address = remote.checked_add(REMOTE_PLAYER_DATA)?;
+    let remote_data: usize = unsafe { try_read_mem(remote_data_address)? };
     if remote_data == 0 {
         return None;
     }
 
-    let samp_ped: usize = unsafe { read_mem(remote_data + REMOTE_DATA_SAMP_PED) };
+    let samp_ped_address = remote_data.checked_add(REMOTE_DATA_SAMP_PED)?;
+    let samp_ped: usize = unsafe { try_read_mem(samp_ped_address)? };
     if samp_ped == 0 {
         return None;
     }
 
-    let gta_ped: *mut c_void = unsafe { read_mem(samp_ped + SAMP_PED_GTA_PED) };
+    let gta_ped_address = samp_ped.checked_add(SAMP_PED_GTA_PED)?;
+    let gta_ped: *mut c_void = unsafe { try_read_mem(gta_ped_address)? };
     (!gta_ped.is_null()).then_some(gta_ped)
 }
 
-/// Reads stRemotePlayer::strPlayerName (an MSVC x86 std::string) without
-/// assuming the remote-player struct itself is a C string.
-unsafe fn remote_player_name(remote: usize) -> Option<String> {
-    let length: usize = unsafe { read_mem(remote + REMOTE_PLAYER_NAME_LENGTH) };
-    let capacity: usize = unsafe { read_mem(remote + REMOTE_PLAYER_NAME_CAPACITY) };
+/// Reads an MSVC x86 `std::string` without treating its object storage as a
+/// C string. Both stRemotePlayer and stPlayerPool use this representation.
+unsafe fn read_msvc_string(object: usize, string_offset: usize) -> Option<String> {
+    let name_address = object.checked_add(string_offset)?;
+    let length_address =
+        name_address.checked_add(REMOTE_PLAYER_NAME_LENGTH - REMOTE_PLAYER_NAME)?;
+    let capacity_address =
+        name_address.checked_add(REMOTE_PLAYER_NAME_CAPACITY - REMOTE_PLAYER_NAME)?;
+    let length: usize = unsafe { try_read_mem(length_address)? };
+    let capacity: usize = unsafe { try_read_mem(capacity_address)? };
     if length == 0 || length > 24 || capacity < length {
         return None;
     }
 
-    let text_ptr: *const u8 = if capacity <= MSVC_STRING_SSO_CAPACITY {
-        (remote + REMOTE_PLAYER_NAME) as *const u8
+    let text_address: usize = if capacity <= MSVC_STRING_SSO_CAPACITY {
+        name_address
     } else {
-        unsafe { read_mem(remote + REMOTE_PLAYER_NAME) }
+        unsafe { try_read_mem(name_address)? }
     };
-    if text_ptr.is_null() {
+    let bytes = try_read_bytes(text_address, length)?;
+    std::str::from_utf8(&bytes).ok().map(str::to_owned)
+}
+
+unsafe fn remote_player_name(remote: usize) -> Option<String> {
+    unsafe { read_msvc_string(remote, REMOTE_PLAYER_NAME) }
+}
+
+unsafe fn configured_local_ped(
+    samp_base: usize,
+    config: &SkinConfig,
+) -> Option<(String, *mut c_void)> {
+    let player_pool = unsafe { get_player_pool(samp_base)? };
+    let name = unsafe { read_msvc_string(player_pool, PLAYER_POOL_LOCAL_NAME)? };
+    if !config.players.contains_key(&name) {
         return None;
     }
 
-    let bytes = unsafe { std::slice::from_raw_parts(text_ptr, length) };
-    std::str::from_utf8(bytes).ok().map(str::to_owned)
+    let local_player_address = player_pool.checked_add(PLAYER_POOL_LOCAL_PLAYER)?;
+    let local_player: usize = unsafe { try_read_mem(local_player_address)? };
+    if local_player == 0 {
+        return None;
+    }
+
+    let samp_ped: usize = unsafe { try_read_mem(local_player)? };
+    if samp_ped == 0 {
+        return None;
+    }
+
+    let gta_ped_address = samp_ped.checked_add(SAMP_PED_GTA_PED)?;
+    let gta_ped: *mut c_void = unsafe { try_read_mem(gta_ped_address)? };
+    (!gta_ped.is_null()).then_some((name, gta_ped))
 }
 
 unsafe fn configured_remote_peds(
@@ -338,13 +462,25 @@ unsafe fn configured_remote_peds(
         return Vec::new();
     };
 
-    let max_player_id: u32 = unsafe { read_mem(player_pool) };
+    let Some(max_player_id): Option<u32> = (unsafe { try_read_mem(player_pool) }) else {
+        return Vec::new();
+    };
     let max_player_id = (max_player_id as usize).min(SAMP_MAX_PLAYERS - 1);
     let mut matches = Vec::new();
+    let Some(remote_players) = player_pool.checked_add(PLAYER_POOL_REMOTE_PLAYERS) else {
+        return matches;
+    };
+    let Some(remote_players_size) = (max_player_id + 1).checked_mul(std::mem::size_of::<u32>())
+    else {
+        return matches;
+    };
+    let Some(remote_player_entries) = try_read_bytes(remote_players, remote_players_size) else {
+        return matches;
+    };
 
-    for player_id in 0..=max_player_id {
-        let remote: usize =
-            unsafe { read_mem(player_pool + PLAYER_POOL_REMOTE_PLAYERS + player_id * 4) };
+    for entry in remote_player_entries.chunks_exact(std::mem::size_of::<u32>()) {
+        let remote =
+            u32::from_ne_bytes(entry.try_into().expect("remote player entry has 4 bytes")) as usize;
         if remote == 0 {
             continue;
         }
@@ -364,12 +500,13 @@ unsafe fn configured_remote_peds(
     matches
 }
 
-unsafe fn ped_model_id(ped: *mut c_void) -> i16 {
-    unsafe { read_mem((ped as usize) + ENTITY_MODEL_INDEX) }
+unsafe fn ped_model_id(ped: *mut c_void) -> Option<i16> {
+    let model_index_address = (ped as usize).checked_add(ENTITY_MODEL_INDEX)?;
+    unsafe { try_read_mem(model_index_address) }
 }
 
 unsafe fn is_gta_ready() -> bool {
-    unsafe { read_mem::<usize>(ADDR_MS_P_TXD_POOL) != 0 }
+    unsafe { try_read_mem::<usize>(ADDR_MS_P_TXD_POOL).is_some_and(|pool| pool != 0) }
 }
 
 unsafe fn get_model_info(model_id: i32) -> *mut c_void {
@@ -377,14 +514,28 @@ unsafe fn get_model_info(model_id: i32) -> *mut c_void {
         return std::ptr::null_mut();
     }
 
-    let model_infos = ADDR_MS_MODEL_INFO_PTRS as *const *mut c_void;
-    unsafe { *model_infos.add(model_id as usize) }
+    let Some(model_info_address) =
+        ADDR_MS_MODEL_INFO_PTRS.checked_add(model_id as usize * std::mem::size_of::<*mut c_void>())
+    else {
+        return std::ptr::null_mut();
+    };
+    unsafe { try_read_mem(model_info_address).unwrap_or_default() }
 }
 
 unsafe fn find_free_model_id() -> Option<i32> {
-    let model_infos = ADDR_MS_MODEL_INFO_PTRS as *const *mut c_void;
     for model_id in PRIVATE_MODEL_ID_START..PRIVATE_MODEL_ID_END {
-        if unsafe { *model_infos.add(model_id as usize) }.is_null() {
+        let Some(model_info_address) = ADDR_MS_MODEL_INFO_PTRS
+            .checked_add(model_id as usize * std::mem::size_of::<*mut c_void>())
+        else {
+            log::error!("private model address calculation overflowed");
+            return None;
+        };
+        let Some(model_info): Option<*mut c_void> = (unsafe { try_read_mem(model_info_address) })
+        else {
+            log::error!("could not read GTA's model-info table while allocating a private model");
+            return None;
+        };
+        if model_info.is_null() {
             return Some(model_id);
         }
     }
@@ -453,6 +604,9 @@ unsafe fn model_for_skin(skin_id: &str, definition: &SkinDefinition) -> Option<i
         }
         None => {
             state.failed_profiles.insert(skin_id.to_owned());
+            log::error!(
+                "skin {skin_id} will be ignored for the rest of this session after its load failure"
+            );
             None
         }
     }
@@ -482,16 +636,31 @@ unsafe fn process_skin_loader_on_game_thread() {
         return;
     };
 
-    for (name, ped) in unsafe { configured_remote_peds(samp_base, config) } {
+    let mut configured_peds = unsafe { configured_remote_peds(samp_base, config) };
+    if let Some(local_player) = unsafe { configured_local_ped(samp_base, config) } {
+        configured_peds.push(local_player);
+    }
+
+    for (name, ped) in configured_peds {
         let skin_id = &config.players[&name];
         let definition = &config.skins[skin_id];
+        let first_match = {
+            let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+            state.matched_players.insert(name.clone())
+        };
+        if first_match {
+            log::info!("matched configured player {name} to skin {skin_id}");
+        }
         let Some(model_id) = (unsafe { model_for_skin(skin_id, definition) }) else {
             continue;
         };
 
         // SA-MP can reset a ped while it remains streamed in. Reapply only
         // after that happens, rather than calling SetModelIndex every frame.
-        if unsafe { ped_model_id(ped) } != model_id as i16 {
+        let Some(current_model_id) = (unsafe { ped_model_id(ped) }) else {
+            continue;
+        };
+        if current_model_id != model_id as i16 {
             unsafe { set_ped_model_index(ped, model_id) };
             log::debug!("applied custom model {model_id} to {name}");
         }
@@ -499,13 +668,20 @@ unsafe fn process_skin_loader_on_game_thread() {
 }
 
 unsafe extern "cdecl" fn game_process_detour() {
-    unsafe { process_skin_loader_on_game_thread() };
+    if !DETOUR_ENTRY_LOGGED.swap(true, Ordering::Relaxed) {
+        log::info!("CGame::Process detour entered; calling the GTA trampoline");
+    }
 
     // GenericDetour::call executes the generated trampoline, never this detour.
     let hook = GAME_PROCESS_HOOK
         .get()
         .expect("CGame::Process hook was enabled before it was stored");
     unsafe { hook.call() };
+
+    if !DETOUR_TRAMPOLINE_LOGGED.swap(true, Ordering::Relaxed) {
+        log::info!("CGame::Process trampoline returned; starting custom polling");
+    }
+    unsafe { process_skin_loader_on_game_thread() };
 }
 
 unsafe fn install_game_process_hook() -> Result<(), retour::Error> {
@@ -544,6 +720,7 @@ fn plugin_thread() {
     SKIN_CONFIG
         .set(config)
         .expect("skin configuration was initialized twice");
+    log::info!("loaded {CONFIG_PATH}: {skin_count} skin(s), {player_count} player mapping(s)");
 
     let samp_base = loop {
         let module = unsafe { GetModuleHandleA(b"samp.dll\0".as_ptr()) };
@@ -555,15 +732,18 @@ fn plugin_thread() {
     SAMP_BASE
         .set(samp_base)
         .expect("SA-MP base was initialized twice");
+    log::info!("found samp.dll at 0x{samp_base:08X}");
 
     while !unsafe { is_gta_ready() } {
         thread::sleep(Duration::from_millis(100));
     }
+    log::info!("GTA model system is ready");
 
     if let Err(error) = unsafe { install_game_process_hook() } {
         log::error!("could not install CGame::Process hook: {error}");
         return;
     }
+    log::info!("installed CGame::Process hook");
 
     log::info!("watching {player_count} configured player(s) across {skin_count} skin(s)");
 }
