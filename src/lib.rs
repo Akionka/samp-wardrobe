@@ -7,9 +7,9 @@ use std::fs::{self, File};
 use std::mem::MaybeUninit;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use winapi::um::memoryapi::ReadProcessMemory;
 use winapi::um::processthreadsapi::GetCurrentProcess;
 use windows_sys::Win32::Foundation::HMODULE;
@@ -75,17 +75,19 @@ const PRIVATE_MODEL_ID_START: i32 = 18_000;
 const PRIVATE_MODEL_ID_END: i32 = 20_000;
 const CONFIG_PATH: &str = "custom_skin_loader.json";
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
+const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(1);
+const ASSET_RELOAD_INTERVAL: Duration = Duration::from_secs(1);
 
 type GameProcessFn = unsafe extern "cdecl" fn();
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 struct SkinDefinition {
     txd_path: String,
     dff_path: String,
     donor_model_id: i32,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 struct SkinConfig {
     #[serde(default)]
     skins: HashMap<String, SkinDefinition>,
@@ -93,18 +95,55 @@ struct SkinConfig {
     players: HashMap<String, String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FileRevision {
+    Present { modified: SystemTime, length: u64 },
+    Missing,
+    Unreadable(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SkinSourceRevision {
+    definition: SkinDefinition,
+    txd: FileRevision,
+    dff: FileRevision,
+}
+
+#[derive(Clone, Debug)]
+struct LoadedSkin {
+    model_id: i32,
+    source: SkinSourceRevision,
+}
+
+#[derive(Clone, Debug)]
+struct AppliedPlayer {
+    skin_id: String,
+    custom_model_id: i32,
+    // This is captured before the loader first assigns a private model and
+    // whenever SA-MP later changes the ped back to an ordinary GTA model.
+    last_server_model_id: Option<i16>,
+}
+
 #[derive(Default)]
 struct LoaderRuntime {
-    loaded_models: HashMap<String, i32>,
-    failed_profiles: HashSet<String>,
+    loaded_models: HashMap<String, LoadedSkin>,
+    // Private model slots remain allocated until a verified GTA/RW teardown
+    // path exists. Keeping this complete set prevents an older custom slot
+    // from being mistaken for a server-supplied model during a replacement.
+    private_model_ids: HashSet<i32>,
+    failed_profiles: HashMap<String, SkinSourceRevision>,
     matched_players: HashSet<String>,
+    applied_players: HashMap<String, AppliedPlayer>,
     last_poll: Option<Instant>,
+    last_config_check: Option<Instant>,
+    observed_config_revision: Option<FileRevision>,
+    last_asset_check: HashMap<String, Instant>,
 }
 
 // The configuration is parsed before the hook is enabled. Runtime state is
 // accessed only from GTA's frame thread.
 static SAMP_BASE: OnceLock<usize> = OnceLock::new();
-static SKIN_CONFIG: OnceLock<SkinConfig> = OnceLock::new();
+static SKIN_CONFIG: OnceLock<RwLock<SkinConfig>> = OnceLock::new();
 static LOADER_RUNTIME: OnceLock<Mutex<LoaderRuntime>> = OnceLock::new();
 static GAME_PROCESS_HOOK: OnceLock<GenericDetour<GameProcessFn>> = OnceLock::new();
 static DETOUR_ENTRY_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -430,11 +469,11 @@ unsafe fn remote_player_name(remote: usize) -> Option<String> {
 
 unsafe fn configured_local_ped(
     samp_base: usize,
-    config: &SkinConfig,
+    tracked_names: &HashSet<String>,
 ) -> Option<(String, *mut c_void)> {
     let player_pool = unsafe { get_player_pool(samp_base)? };
     let name = unsafe { read_msvc_string(player_pool, PLAYER_POOL_LOCAL_NAME)? };
-    if !config.players.contains_key(&name) {
+    if !tracked_names.contains(&name) {
         return None;
     }
 
@@ -456,7 +495,7 @@ unsafe fn configured_local_ped(
 
 unsafe fn configured_remote_peds(
     samp_base: usize,
-    config: &SkinConfig,
+    tracked_names: &HashSet<String>,
 ) -> Vec<(String, *mut c_void)> {
     let Some(player_pool) = (unsafe { get_player_pool(samp_base) }) else {
         return Vec::new();
@@ -488,7 +527,7 @@ unsafe fn configured_remote_peds(
         let Some(name) = (unsafe { remote_player_name(remote) }) else {
             continue;
         };
-        if !config.players.contains_key(&name) {
+        if !tracked_names.contains(&name) {
             continue;
         }
 
@@ -546,17 +585,7 @@ unsafe fn find_free_model_id() -> Option<i32> {
     None
 }
 
-fn load_skin_config() -> Result<SkinConfig, String> {
-    let text = match fs::read_to_string(CONFIG_PATH) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::write(CONFIG_PATH, "{}\n")
-                .map_err(|error| format!("could not create {CONFIG_PATH}: {error}"))?;
-            log::info!("created empty {CONFIG_PATH}");
-            return Ok(SkinConfig::default());
-        }
-        Err(error) => return Err(format!("could not read {CONFIG_PATH}: {error}")),
-    };
+fn parse_skin_config(text: &str) -> Result<SkinConfig, String> {
     let config: SkinConfig =
         serde_json::from_str(&text).map_err(|error| format!("invalid {CONFIG_PATH}: {error}"))?;
 
@@ -572,26 +601,159 @@ fn load_skin_config() -> Result<SkinConfig, String> {
         }
     }
 
-    for (player_name, skin_id) in &config.players {
-        if !config.skins.contains_key(skin_id) {
-            return Err(format!(
-                "player {player_name} references unknown skin {skin_id}"
-            ));
+    Ok(config)
+}
+
+fn read_skin_config() -> Result<SkinConfig, String> {
+    let text = fs::read_to_string(CONFIG_PATH)
+        .map_err(|error| format!("could not read {CONFIG_PATH}: {error}"))?;
+    parse_skin_config(&text)
+}
+
+fn load_skin_config() -> Result<SkinConfig, String> {
+    match read_skin_config() {
+        Ok(config) => Ok(config),
+        Err(_error) if matches!(fs::metadata(CONFIG_PATH), Err(metadata_error) if metadata_error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            fs::write(CONFIG_PATH, "{}\n")
+                .map_err(|write_error| format!("could not create {CONFIG_PATH}: {write_error}"))?;
+            log::info!("created empty {CONFIG_PATH}");
+            Ok(SkinConfig::default())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn file_revision(path: &str) -> FileRevision {
+    match fs::metadata(path) {
+        Ok(metadata) => match metadata.modified() {
+            Ok(modified) => FileRevision::Present {
+                modified,
+                length: metadata.len(),
+            },
+            Err(error) => FileRevision::Unreadable(error.to_string()),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => FileRevision::Missing,
+        Err(error) => FileRevision::Unreadable(error.to_string()),
+    }
+}
+
+fn skin_source_revision(definition: &SkinDefinition) -> SkinSourceRevision {
+    SkinSourceRevision {
+        definition: definition.clone(),
+        txd: file_revision(&definition.txd_path),
+        dff: file_revision(&definition.dff_path),
+    }
+}
+
+fn reload_skin_config_if_changed() {
+    let runtime = LOADER_RUNTIME.get_or_init(|| Mutex::new(LoaderRuntime::default()));
+    {
+        let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        let now = Instant::now();
+        if state
+            .last_config_check
+            .is_some_and(|last_check| now.duration_since(last_check) < CONFIG_RELOAD_INTERVAL)
+        {
+            return;
+        }
+        state.last_config_check = Some(now);
+    }
+
+    let revision = file_revision(CONFIG_PATH);
+    {
+        let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        if state.observed_config_revision.as_ref() == Some(&revision) {
+            return;
+        }
+        state.observed_config_revision = Some(revision.clone());
+    }
+
+    match revision {
+        FileRevision::Present { .. } => {}
+        FileRevision::Missing => {
+            log::error!("{CONFIG_PATH} was removed; keeping the active configuration");
+            return;
+        }
+        FileRevision::Unreadable(error) => {
+            log::error!(
+                "could not inspect changed {CONFIG_PATH}: {error}; keeping the active configuration"
+            );
+            return;
         }
     }
 
-    Ok(config)
+    let candidate = match read_skin_config() {
+        Ok(config) => config,
+        Err(error) => {
+            log::error!("configuration change ignored: {error}");
+            return;
+        }
+    };
+
+    let Some(config_lock) = SKIN_CONFIG.get() else {
+        return;
+    };
+    let mut current = config_lock
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+
+    let skin_count = candidate.skins.len();
+    let player_count = candidate.players.len();
+    *current = candidate;
+    // A corrected asset path or a newly added profile should be allowed to load
+    // on the next matching poll. Changed profiles are rebuilt into fresh
+    // private slots; old slots remain alive until GTA exits.
+    state.failed_profiles.clear();
+    state.matched_players.clear();
+    log::info!("reloaded {CONFIG_PATH}: {skin_count} skin(s), {player_count} player mapping(s)");
 }
 
 unsafe fn model_for_skin(skin_id: &str, definition: &SkinDefinition) -> Option<i32> {
     let runtime = LOADER_RUNTIME.get_or_init(|| Mutex::new(LoaderRuntime::default()));
+    let now = Instant::now();
     {
         let state = runtime.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(model_id) = state.loaded_models.get(skin_id) {
-            return Some(*model_id);
+        let loaded_model = state.loaded_models.get(skin_id);
+        let checked_recently = state
+            .last_asset_check
+            .get(skin_id)
+            .is_some_and(|last_check| now.duration_since(*last_check) < ASSET_RELOAD_INTERVAL);
+
+        if let Some(loaded) = loaded_model {
+            if loaded.source.definition == *definition && checked_recently {
+                return Some(loaded.model_id);
+            }
         }
-        if state.failed_profiles.contains(skin_id) {
-            return None;
+
+        // A failed load is retried only after the asset check interval, unless
+        // the JSON profile itself changed. This keeps a bad path from filling
+        // the log or consuming game-thread time every poll.
+        if checked_recently
+            && state
+                .failed_profiles
+                .get(skin_id)
+                .is_some_and(|failed| failed.definition == *definition)
+        {
+            return loaded_model.map(|loaded| loaded.model_id);
+        }
+    }
+
+    let source = skin_source_revision(definition);
+    {
+        let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        state.last_asset_check.insert(skin_id.to_owned(), now);
+        if let Some(loaded) = state.loaded_models.get(skin_id) {
+            if loaded.source == source {
+                return Some(loaded.model_id);
+            }
+        }
+        if state.failed_profiles.get(skin_id) == Some(&source) {
+            return state
+                .loaded_models
+                .get(skin_id)
+                .map(|loaded| loaded.model_id);
         }
     }
 
@@ -599,17 +761,79 @@ unsafe fn model_for_skin(skin_id: &str, definition: &SkinDefinition) -> Option<i
     let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
     match model_id {
         Some(model_id) => {
-            state.loaded_models.insert(skin_id.to_owned(), model_id);
+            let replaced_model = state
+                .loaded_models
+                .insert(skin_id.to_owned(), LoadedSkin { model_id, source });
+            state.private_model_ids.insert(model_id);
+            state.failed_profiles.remove(skin_id);
+            if let Some(previous) = replaced_model {
+                log::info!(
+                    "replaced skin {skin_id}: private model {} -> {model_id}; old resources stay loaded until GTA exits",
+                    previous.model_id
+                );
+            }
             Some(model_id)
         }
         None => {
-            state.failed_profiles.insert(skin_id.to_owned());
-            log::error!(
-                "skin {skin_id} will be ignored for the rest of this session after its load failure"
-            );
-            None
+            state.failed_profiles.insert(skin_id.to_owned(), source);
+            if let Some(loaded) = state.loaded_models.get(skin_id) {
+                log::error!(
+                    "skin {skin_id} reload failed; keeping private model {} active",
+                    loaded.model_id
+                );
+                Some(loaded.model_id)
+            } else {
+                log::error!("skin {skin_id} is unavailable until its files or profile change");
+                None
+            }
         }
     }
+}
+
+unsafe fn restore_server_model_for_removed_assignment(name: &str, ped: *mut c_void) {
+    let Some(current_model_id) = (unsafe { ped_model_id(ped) }) else {
+        return;
+    };
+
+    let runtime = LOADER_RUNTIME.get_or_init(|| Mutex::new(LoaderRuntime::default()));
+    let (applied, current_is_private) = {
+        let state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        (
+            state.applied_players.get(name).cloned(),
+            state.private_model_ids.contains(&(current_model_id as i32)),
+        )
+    };
+    let Some(applied) = applied else {
+        return;
+    };
+
+    if !current_is_private && current_model_id != applied.custom_model_id as i16 {
+        // SA-MP has already supplied a normal model since the custom mapping
+        // was removed. It is newer than our saved value, so leave it alone.
+        let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        state.applied_players.remove(name);
+        state.matched_players.remove(name);
+        return;
+    }
+
+    if let Some(server_model_id) = applied.last_server_model_id {
+        if current_model_id != server_model_id {
+            unsafe { set_ped_model_index(ped, server_model_id as i32) };
+            log::info!(
+                "restored server model {server_model_id} for {name} after removing skin {}",
+                applied.skin_id
+            );
+        }
+    } else {
+        log::warn!(
+            "cannot restore {name} after removing skin {}; no server model was observed",
+            applied.skin_id
+        );
+    }
+
+    let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+    state.applied_players.remove(name);
+    state.matched_players.remove(name);
 }
 
 unsafe fn process_skin_loader_on_game_thread() {
@@ -629,21 +853,47 @@ unsafe fn process_skin_loader_on_game_thread() {
         state.last_poll = Some(now);
     }
 
-    let Some(config) = SKIN_CONFIG.get() else {
+    reload_skin_config_if_changed();
+
+    let Some(config_lock) = SKIN_CONFIG.get() else {
         return;
     };
+    let config = config_lock
+        .read()
+        .unwrap_or_else(|error| error.into_inner());
     let Some(&samp_base) = SAMP_BASE.get() else {
         return;
     };
 
-    let mut configured_peds = unsafe { configured_remote_peds(samp_base, config) };
-    if let Some(local_player) = unsafe { configured_local_ped(samp_base, config) } {
+    let tracked_names = {
+        let state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+        config
+            .players
+            .keys()
+            .chain(state.applied_players.keys())
+            .cloned()
+            .collect::<HashSet<_>>()
+    };
+    if tracked_names.is_empty() {
+        return;
+    }
+
+    let mut configured_peds = unsafe { configured_remote_peds(samp_base, &tracked_names) };
+    if let Some(local_player) = unsafe { configured_local_ped(samp_base, &tracked_names) } {
         configured_peds.push(local_player);
     }
 
     for (name, ped) in configured_peds {
-        let skin_id = &config.players[&name];
-        let definition = &config.skins[skin_id];
+        let Some(skin_id) = config.players.get(&name) else {
+            unsafe { restore_server_model_for_removed_assignment(&name, ped) };
+            continue;
+        };
+        let Some(definition) = config.skins.get(skin_id) else {
+            // Keeping this mapping in the JSON is useful while editing. It
+            // simply disables the custom assignment and restores the ped.
+            unsafe { restore_server_model_for_removed_assignment(&name, ped) };
+            continue;
+        };
         let first_match = {
             let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
             state.matched_players.insert(name.clone())
@@ -655,14 +905,48 @@ unsafe fn process_skin_loader_on_game_thread() {
             continue;
         };
 
-        // SA-MP can reset a ped while it remains streamed in. Reapply only
-        // after that happens, rather than calling SetModelIndex every frame.
+        // SA-MP can reset a ped while it remains streamed in. Before applying
+        // our replacement again, remember the newly supplied server model.
         let Some(current_model_id) = (unsafe { ped_model_id(ped) }) else {
             continue;
         };
         if current_model_id != model_id as i16 {
+            let last_server_model_id = {
+                let state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+                if state.private_model_ids.contains(&(current_model_id as i32)) {
+                    state
+                        .applied_players
+                        .get(&name)
+                        .and_then(|applied| applied.last_server_model_id)
+                } else {
+                    Some(current_model_id)
+                }
+            };
             unsafe { set_ped_model_index(ped, model_id) };
+            let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+            state.applied_players.insert(
+                name.clone(),
+                AppliedPlayer {
+                    skin_id: skin_id.clone(),
+                    custom_model_id: model_id,
+                    last_server_model_id,
+                },
+            );
             log::debug!("applied custom model {model_id} to {name}");
+        } else {
+            let mut state = runtime.lock().unwrap_or_else(|error| error.into_inner());
+            let last_server_model_id = state
+                .applied_players
+                .get(&name)
+                .and_then(|applied| applied.last_server_model_id);
+            state.applied_players.insert(
+                name.clone(),
+                AppliedPlayer {
+                    skin_id: skin_id.clone(),
+                    custom_model_id: model_id,
+                    last_server_model_id,
+                },
+            );
         }
     }
 }
@@ -713,13 +997,12 @@ fn plugin_thread() {
     };
     let skin_count = config.skins.len();
     let player_count = config.players.len();
-    if player_count == 0 {
-        log::info!("{CONFIG_PATH} has no player mappings; loader is idle");
-        return;
-    }
     SKIN_CONFIG
-        .set(config)
+        .set(RwLock::new(config))
         .expect("skin configuration was initialized twice");
+    if player_count == 0 {
+        log::info!("{CONFIG_PATH} has no player mappings; waiting for a configuration change");
+    }
     log::info!("loaded {CONFIG_PATH}: {skin_count} skin(s), {player_count} player mapping(s)");
 
     let samp_base = loop {

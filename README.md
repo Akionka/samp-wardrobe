@@ -73,9 +73,28 @@ empty `{}` file and remains idle until you add at least one profile.
 - `donor_model_id` is a normal GTA ped model whose metadata is used to
   initialize a new private slot. `7` is the currently tested default.
 
-Skins are loaded only when an assigned player is streamed in. Each skin receives
-one private GTA model ID that every mapped player shares, so multiple configured
-players can use one skin without duplicating it or affecting ordinary game models.
+Skins are loaded only when an assigned player is streamed in. Each active skin
+generation receives one private GTA model ID that every mapped player shares,
+so multiple configured players can use one skin without duplicating it or
+affecting ordinary game models.
+
+The loader notices saved changes to `custom_skin_loader.json` within about one
+second. You can add profiles, change player-to-skin mappings, or change a
+profile's TXD path, DFF path, or donor while GTA is running. It also checks the
+loaded TXD and DFF files about once per second. A changed profile or asset is
+loaded into a fresh private model slot and every matching streamed-in ped moves
+to it on the next poll.
+
+Removing a player assignment or skin profile restores an affected streamed-in
+ped to the last normal model observed from SA-MP. A player mapping whose skin
+profile was removed is treated as disabled, which makes it practical to edit a
+profile and its assignments in separate saves. Invalid JSON or a failed asset
+reload leaves the last working configuration/model active and reports the
+error in `custom_skin_loader.log`.
+
+For safety, superseded private model slots, TXD slots, and RenderWare clumps
+remain allocated until GTA exits. Repeated live reloads can therefore exhaust
+the loader's private model-ID range; safe in-session cleanup is still pending.
 
 ## Build and deploy
 

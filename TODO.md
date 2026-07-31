@@ -13,9 +13,22 @@
 
 ## Configuration and lifecycle
 
-- [ ] Reload `custom_skin_loader.json` without restarting GTA. New profiles should become
-  available safely; define and implement safe cleanup for obsolete private
-  model slots, TXD references, and clumps before unloading old profiles.
+- [x] Auto-reload `custom_skin_loader.json` without restarting GTA. New
+  profiles and player mappings become available safely.
+- [x] Support live skin-profile replacement when its TXD path, DFF path, or
+  donor model changes. Build a replacement into a fresh private model slot and
+  move every assigned streamed-in ped to it on the game thread. Superseded
+  resources deliberately remain alive until GTA exits.
+- [x] Detect TXD/DFF file changes even when `custom_skin_loader.json` is
+  unchanged. Compare modification time and file length about once per second,
+  then rebuild the affected skin and move configured local/remote players to
+  the replacement model.
+- [x] Support profile or assignment removal. Restore every affected streamed-in
+  ped to the most recently observed normal server model. Track that model when
+  SA-MP changes a ped away from a loader-owned private model.
+- [ ] Define and implement safe cleanup for obsolete private model slots, TXD
+  references, and clumps. Confirm the GTA/RW destruction order, reference
+  counts, and model-slot reuse before allowing private IDs to be recycled.
 - [ ] Add a user-facing reload control, such as a chat command or hotkey.
 - [ ] Support toggling an individual player or skin profile on and off.
 - [ ] Preserve and document the first-run behavior: create a missing
