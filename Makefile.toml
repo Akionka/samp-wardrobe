@@ -19,3 +19,8 @@ script = [
     "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/custom_skin_loader.dll C:/Games/GTASA/custom_skin_loader.asi\"",
     "powershell -Command \"Copy-Item -Force target/i686-pc-windows-msvc/debug/custom_skin_loader.pdb C:/Games/GTASA/custom_skin_loader.pdb\"",
 ]
+
+[tasks.deploy-ui]
+script = [
+    "powershell -Command \"New-Item -ItemType Directory -Force C:/Games/GTASA/moonloader/scripts/custom_skin_loader_ui | Out-Null; Copy-Item -Force moonloader/custom_skin_loader_ui/custom_skin_loader_ui.lua C:/Games/GTASA/moonloader/scripts/custom_skin_loader_ui/custom_skin_loader_ui.lua\"",
+]

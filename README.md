@@ -99,6 +99,28 @@ ped-model entry is retained and recycled by the loader, avoiding repeated
 allocation from GTA's fixed ped-model-info array. If the safe SA-MP scan is
 incomplete, cleanup is postponed rather than risking a dangling model.
 
+## Optional MoonLoader UI
+
+`moonloader/custom_skin_loader_ui/custom_skin_loader_ui.lua` is an optional
+MoonLoader `mimgui` front-end for the same JSON configuration. It does not
+communicate with the Rust ASI directly: it edits `custom_skin_loader.json`,
+which the ASI then reloads automatically. In-game, use `/skins` to open the
+editor. Profile and player-assignment changes are staged until **Save JSON** is
+pressed.
+
+Deploy the Lua script separately with:
+
+```powershell
+cargo make deploy-ui
+```
+
+The script is installed under `moonloader/scripts/custom_skin_loader_ui/`,
+where this installation's GitHelper discovers and auto-reloads it. Restart GTA
+or MoonLoader once after the first deployment so GitHelper adds this new script
+to its scan; subsequent Lua edits auto-reload while the game is running. Saving
+uses a temporary file and an atomic Windows replacement so the ASI never
+receives a partially written JSON document.
+
 ## Build and deploy
 
 The project is configured to build for 32-bit Windows in

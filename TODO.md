@@ -61,6 +61,11 @@
 
 ## Later quality of life
 
-- [ ] Consider an ImGui interface after the configuration/reload workflow is
-  stable.
-- [ ] Add profile management and status feedback to the UI, if implemented.
+- [x] Add an optional MoonLoader (Lua) ImGui configuration UI after the
+  configuration/reload workflow is stable. Keep it as a file-based front-end:
+  Lua reads and edits `custom_skin_loader.json`, while the Rust ASI continues
+  to own GTA model loading and observes changes through its existing reload
+  path. Do not introduce Lua-to-Rust FFI for this.
+- [x] Make the MoonLoader UI save JSON atomically (write a temporary file, then
+  rename it) so the Rust loader never observes a partially written config.
+- [x] Add profile management and status feedback to the MoonLoader UI.
