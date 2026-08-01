@@ -548,23 +548,7 @@ local function select_preset(preset_id)
   set_buffer(state.preset_name, preset_id)
 end
 
-local function capture_preset()
-  local preset_id = trim(buffer_value(state.preset_name))
-  if preset_id == '' then
-    set_status('Enter a preset name before capturing it.', true)
-    return
-  end
-  if state.selected_preset and preset_id ~= state.selected_preset then
-    if state.config.presets[preset_id] then
-      set_status('A preset with that name already exists.', true)
-      return
-    end
-    state.config.presets[state.selected_preset] = nil
-  elseif not state.selected_preset and state.config.presets[preset_id] then
-    set_status('Select the existing preset before replacing it.', true)
-    return
-  end
-
+local function preset_activation_state()
   local profiles = {}
   for skin_id, skin in pairs(state.config.skins) do
     profiles[skin_id] = skin.enabled == true
@@ -573,11 +557,47 @@ local function capture_preset()
   for _, rule in ipairs(state.config.rules) do
     rules[rule_preset_key(rule)] = rule.enabled == true
   end
-  state.config.presets[preset_id] = { profiles = profiles, rules = rules }
+  return { profiles = profiles, rules = rules }
+end
+
+local function add_preset()
+  local preset_id = 'new_preset'
+  local suffix = 2
+  while state.config.presets[preset_id] do
+    preset_id = 'new_preset_' .. suffix
+    suffix = suffix + 1
+  end
+
+  state.config.presets[preset_id] = preset_activation_state()
   state.selected_preset = preset_id
   set_buffer(state.preset_name, preset_id)
   state.dirty = true
-  set_status('Captured preset ' .. preset_id .. '. Save JSON to keep it.', false)
+  set_status('Added preset ' .. preset_id .. '. Save JSON to keep it.', false)
+end
+
+local function sync_preset_name()
+  local old_preset_id = state.selected_preset
+  if not old_preset_id or not state.config.presets[old_preset_id] then return end
+
+  local new_preset_id = trim(buffer_value(state.preset_name))
+  if new_preset_id == '' then
+    set_buffer(state.preset_name, old_preset_id)
+    set_status('Preset name cannot be empty.', true)
+    return
+  end
+  if new_preset_id == old_preset_id then return end
+  if state.config.presets[new_preset_id] then
+    set_buffer(state.preset_name, old_preset_id)
+    set_status('A preset with that name already exists.', true)
+    return
+  end
+
+  state.config.presets[new_preset_id] = state.config.presets[old_preset_id]
+  state.config.presets[old_preset_id] = nil
+  state.selected_preset = new_preset_id
+  set_buffer(state.preset_name, new_preset_id)
+  state.dirty = true
+  set_status('Preset changes are staged. Save JSON to keep them.', false)
 end
 
 local function apply_selected_preset()
@@ -598,6 +618,28 @@ local function apply_selected_preset()
   if state.selected_rule then select_rule(state.selected_rule) end
   state.dirty = true
   set_status('Applied preset ' .. preset_id .. '. Save JSON to apply it in-game.', false)
+end
+
+local function sync_selected_preset_skin(skin_id)
+  local preset_id = state.selected_preset
+  local preset = preset_id and state.config.presets[preset_id]
+  local skin = skin_id and state.config.skins[skin_id]
+  if not preset or not skin then return end
+
+  preset.profiles[skin_id] = skin.enabled == true
+  state.dirty = true
+  set_status('Updated preset ' .. preset_id .. '. Save JSON to keep it.', false)
+end
+
+local function sync_selected_preset_rule(index)
+  local preset_id = state.selected_preset
+  local preset = preset_id and state.config.presets[preset_id]
+  local rule = index and state.config.rules[index]
+  if not preset or not rule then return end
+
+  preset.rules[rule_preset_key(rule)] = rule.enabled == true
+  state.dirty = true
+  set_status('Updated preset ' .. preset_id .. '. Save JSON to keep it.', false)
 end
 
 local function delete_selected_preset()
@@ -639,7 +681,10 @@ local function draw_profiles()
   if input_text('TXD path', state.txd_path) then sync_profile_fields() end
   if input_text('DFF path', state.dff_path) then sync_profile_fields() end
   if input_int('Donor model ID', state.donor_model_id) then sync_profile_fields() end
-  if imgui.Checkbox('Enabled##profile', state.profile_enabled) then sync_profile_fields() end
+  if imgui.Checkbox('Enabled##profile', state.profile_enabled) then
+    sync_profile_fields()
+    sync_selected_preset_skin(state.selected_skin)
+  end
   imgui.PopItemWidth()
   imgui.EndGroup()
 end
@@ -652,24 +697,22 @@ local function draw_presets()
   for _, preset_id in ipairs(sorted_keys(state.config.presets)) do
     if imgui.Selectable(preset_id .. '##preset', state.selected_preset == preset_id) then
       select_preset(preset_id)
+      apply_selected_preset()
     end
   end
   imgui.EndChild()
-  if imgui.Button('New##preset', imgui.ImVec2(106, 0)) then clear_preset_editor() end
+  if imgui.Button('New##preset', imgui.ImVec2(106, 0)) then add_preset() end
   imgui.SameLine()
   if imgui.Button('Delete##preset', imgui.ImVec2(106, 0)) then delete_selected_preset() end
   imgui.EndGroup()
 
   imgui.SameLine()
   imgui.BeginGroup()
-  imgui.Text(state.selected_preset and 'Edit activation preset' or 'Capture an activation preset')
+  imgui.Text(state.selected_preset and 'Edit activation preset' or 'Add an activation preset')
   imgui.PushItemWidth(320)
-  input_text('Preset name', state.preset_name)
+  if input_text('Preset name', state.preset_name) then sync_preset_name() end
   imgui.PopItemWidth()
-  if imgui.Button('Capture current##preset', imgui.ImVec2(156, 0)) then capture_preset() end
-  imgui.SameLine()
-  if imgui.Button('Apply selected##preset', imgui.ImVec2(156, 0)) then apply_selected_preset() end
-  imgui.TextDisabled('Presets save only enabled/disabled states for skins and rules.')
+  imgui.TextDisabled('Click a preset to apply it. Toggle changes update the selected preset.')
   imgui.EndGroup()
 end
 
@@ -808,7 +851,10 @@ local function draw_rules()
   if input_int('Server model ID (-1 = any)', state.rule_server_model_id) then sync_rule_conditions() end
   rule_profile_picker()
   imgui.PopItemWidth()
-  if imgui.Checkbox('Enabled##rule', state.rule_enabled) then sync_rule_conditions() end
+  if imgui.Checkbox('Enabled##rule', state.rule_enabled) then
+    sync_rule_conditions()
+    sync_selected_preset_rule(state.selected_rule)
+  end
   if state.selected_rule then
     imgui.TextDisabled(rule_priority_label(state.config.rules[state.selected_rule]))
   end

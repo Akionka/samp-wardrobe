@@ -74,7 +74,8 @@ the same JSON file and writes it atomically, so the watcher does not observe a
 partial file. Its rule editor can list connected SA-MP players and fill the
 player-name selector. The editor also owns an optional top-level `presets`
 field: each named preset records only the enabled state of the existing skins
-and rules. Applying one stages those states until **Save JSON**; Rust
+and rules. Creating one captures the current state; clicking one applies it,
+and later toggle changes update the selected preset until **Save JSON**. Rust
 ignores the UI-only field and continues to own matching and asset loading.
 
 ## SA-MP version detection and player discovery

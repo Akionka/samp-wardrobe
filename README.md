@@ -118,9 +118,10 @@ atomically, so Wardrobe never reads a half-written file.
 
 When editing a rule, the **Player name** dropdown lists connected SA-MP players
 and also accepts any typed name for an offline player. **Activation presets**
-capture only which existing profiles and rules are enabled. Select a preset and
-apply it to stage those switches, then use **Save JSON** to send the change to
-Wardrobe. Presets do not duplicate your skin paths or matching rules.
+capture the current enabled states of existing skins and rules. Click a preset
+to stage its switches; later enabled/disabled changes update the selected
+preset. Use **Save JSON** to send the change to Wardrobe. Presets do not
+duplicate your skin paths or matching rules.
 
 ## If something does not work
 
