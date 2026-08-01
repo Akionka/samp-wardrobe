@@ -86,3 +86,9 @@
 - [x] Make the MoonLoader UI save JSON atomically (write a temporary file, then
   rename it) so the Rust loader never observes a partially written config.
 - [x] Add profile management and status feedback to the MoonLoader UI.
+- [x] Add an online-player picker to the MoonLoader rule editor. It should
+  enumerate connected SA-MP players, search by nickname, and fill the selected
+  rule's player-name selector without a Rust/Lua bridge.
+- [x] Add named MoonLoader presets. A preset should capture the enabled state
+  of the current profiles and rules, then apply that activation set later for
+  a different character or server without duplicating skin asset definitions.

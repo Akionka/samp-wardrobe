@@ -13,6 +13,7 @@ local TEMP_CONFIG_PATH = CONFIG_PATH .. '.tmp'
 local PRIVATE_MODEL_ID_START = 18000
 local MOVEFILE_REPLACE_EXISTING = 0x1
 local MOVEFILE_WRITE_THROUGH = 0x8
+local ONLINE_PLAYER_REFRESH_SECONDS = 1
 
 ffi.cdef [[
   int __stdcall MoveFileExA(const char* existingFileName, const char* newFileName, unsigned long flags);
@@ -49,7 +50,7 @@ local function input_int(label, value)
 end
 
 local state = {
-  config = { skins = {}, rules = {} },
+  config = { skins = {}, rules = {}, presets = {} },
   window_open = new.bool(false),
   dirty = false,
   status = 'Use /wardrobe to open this editor.',
@@ -66,6 +67,10 @@ local state = {
   rule_server_model_id = new.int(-1),
   rule_enabled = new.bool(true),
   profile_search = new.char[64](),
+  preset_name = new.char[64](),
+  online_players = {},
+  online_players_checked_at = nil,
+  selected_preset = nil,
 }
 
 local function buffer_value(buffer)
@@ -89,6 +94,41 @@ local function sorted_keys(map)
   return keys
 end
 
+local function rule_preset_key(rule)
+  local player_name = rule.player_name or ''
+  local server_model_id = rule.server_model_id
+  return player_name .. '\31' .. (server_model_id ~= nil and tostring(server_model_id) or '')
+end
+
+local function online_players()
+  local now = os.clock()
+  if state.online_players_checked_at
+      and now - state.online_players_checked_at < ONLINE_PLAYER_REFRESH_SECONDS then
+    return state.online_players
+  end
+
+  state.online_players_checked_at = now
+  state.online_players = {}
+  if not isSampAvailable() then return state.online_players end
+
+  local maximum_player_id = sampGetMaxPlayerId(false)
+  if type(maximum_player_id) ~= 'number' then return state.online_players end
+
+  for player_id = 0, maximum_player_id do
+    if sampIsPlayerConnected(player_id) then
+      local ok, nickname = pcall(sampGetPlayerNickname, player_id)
+      if ok and type(nickname) == 'string' and nickname ~= '' then
+        table.insert(state.online_players, { id = player_id, nickname = nickname })
+      end
+    end
+  end
+
+  table.sort(state.online_players, function(left, right)
+    return left.id < right.id
+  end)
+  return state.online_players
+end
+
 local function set_status(message, is_error)
   state.status = message
   state.status_is_error = is_error or false
@@ -98,7 +138,15 @@ local function ensure_schema(config)
   if type(config) ~= 'table' then config = {} end
   if type(config.skins) ~= 'table' then config.skins = {} end
   if type(config.rules) ~= 'table' then config.rules = {} end
+  if type(config.presets) ~= 'table' then config.presets = {} end
   config.players = nil
+
+  for preset_id, preset in pairs(config.presets) do
+    if type(preset) ~= 'table' then preset = {} end
+    if type(preset.profiles) ~= 'table' then preset.profiles = {} end
+    if type(preset.rules) ~= 'table' then preset.rules = {} end
+    config.presets[preset_id] = preset
+  end
 
   for _, skin in pairs(config.skins) do
     if type(skin) == 'table' and skin.enabled == nil then
@@ -172,7 +220,7 @@ end
 local function load_config()
   local file = io.open(CONFIG_PATH, 'rb')
   if not file then
-    state.config = { skins = {}, rules = {} }
+    state.config = { skins = {}, rules = {}, presets = {} }
     state.dirty = false
     state.selected_skin = nil
     state.selected_rule = nil
@@ -186,6 +234,8 @@ local function load_config()
     state.rule_server_model_id[0] = -1
     state.rule_enabled[0] = true
     set_buffer(state.profile_search, '')
+    state.selected_preset = nil
+    set_buffer(state.preset_name, '')
     set_status('No config file yet. Saving will create it.', false)
     return true
   end
@@ -219,6 +269,8 @@ local function load_config()
   state.rule_server_model_id[0] = -1
   state.rule_enabled[0] = true
   set_buffer(state.profile_search, '')
+  state.selected_preset = nil
+  set_buffer(state.preset_name, '')
   set_status('Loaded wardrobe.json.', false)
   return true
 end
@@ -330,6 +382,12 @@ local function sync_profile_id()
       rule.profile_id = new_skin_id
     end
   end
+  for _, preset in pairs(state.config.presets) do
+    if preset.profiles[old_skin_id] ~= nil then
+      preset.profiles[new_skin_id] = preset.profiles[old_skin_id]
+      preset.profiles[old_skin_id] = nil
+    end
+  end
   state.selected_skin = new_skin_id
   set_buffer(state.profile_id, new_skin_id)
   state.dirty = true
@@ -357,8 +415,16 @@ local function delete_selected_profile()
   end
 
   state.config.skins[skin_id] = nil
+  for _, preset in pairs(state.config.presets) do
+    preset.profiles[skin_id] = nil
+  end
   for index = #state.config.rules, 1, -1 do
     if state.config.rules[index].profile_id == skin_id then
+      local removed_rule = state.config.rules[index]
+      local removed_rule_key = rule_preset_key(removed_rule)
+      for _, preset in pairs(state.config.presets) do
+        preset.rules[removed_rule_key] = nil
+      end
       table.remove(state.config.rules, index)
     end
   end
@@ -430,11 +496,21 @@ local function sync_rule_conditions()
   local rule = index and state.config.rules[index]
   if not rule then return end
 
+  local previous_key = rule_preset_key(rule)
   local player_name = trim(buffer_value(state.rule_player_name))
   local server_model_id = state.rule_server_model_id[0]
   rule.player_name = player_name ~= '' and player_name or nil
   rule.server_model_id = server_model_id >= 0 and server_model_id or nil
   rule.enabled = state.rule_enabled[0]
+  local current_key = rule_preset_key(rule)
+  if current_key ~= previous_key then
+    for _, preset in pairs(state.config.presets) do
+      if preset.rules[previous_key] ~= nil then
+        preset.rules[current_key] = preset.rules[previous_key]
+        preset.rules[previous_key] = nil
+      end
+    end
+  end
   state.dirty = true
   set_status('Rule changes are staged. Save JSON to apply them in-game.', false)
 end
@@ -446,10 +522,90 @@ local function delete_selected_rule()
     return
   end
 
+  local removed_rule_key = rule_preset_key(state.config.rules[index])
+  for _, preset in pairs(state.config.presets) do
+    preset.rules[removed_rule_key] = nil
+  end
   table.remove(state.config.rules, index)
   clear_rule_editor()
   state.dirty = true
   set_status('Deleted the matching rule. Save JSON to apply.', false)
+end
+
+local function clear_preset_editor()
+  state.selected_preset = nil
+  set_buffer(state.preset_name, '')
+end
+
+local function select_preset(preset_id)
+  if not state.config.presets[preset_id] then return end
+  state.selected_preset = preset_id
+  set_buffer(state.preset_name, preset_id)
+end
+
+local function capture_preset()
+  local preset_id = trim(buffer_value(state.preset_name))
+  if preset_id == '' then
+    set_status('Enter a preset name before capturing it.', true)
+    return
+  end
+  if state.selected_preset and preset_id ~= state.selected_preset then
+    if state.config.presets[preset_id] then
+      set_status('A preset with that name already exists.', true)
+      return
+    end
+    state.config.presets[state.selected_preset] = nil
+  elseif not state.selected_preset and state.config.presets[preset_id] then
+    set_status('Select the existing preset before replacing it.', true)
+    return
+  end
+
+  local profiles = {}
+  for skin_id, skin in pairs(state.config.skins) do
+    profiles[skin_id] = skin.enabled == true
+  end
+  local rules = {}
+  for _, rule in ipairs(state.config.rules) do
+    rules[rule_preset_key(rule)] = rule.enabled == true
+  end
+  state.config.presets[preset_id] = { profiles = profiles, rules = rules }
+  state.selected_preset = preset_id
+  set_buffer(state.preset_name, preset_id)
+  state.dirty = true
+  set_status('Captured preset ' .. preset_id .. '. Save JSON to keep it.', false)
+end
+
+local function apply_selected_preset()
+  local preset_id = state.selected_preset
+  local preset = preset_id and state.config.presets[preset_id]
+  if not preset then
+    set_status('Select a preset to apply.', true)
+    return
+  end
+
+  for skin_id, skin in pairs(state.config.skins) do
+    skin.enabled = preset.profiles[skin_id] == true
+  end
+  for _, rule in ipairs(state.config.rules) do
+    rule.enabled = preset.rules[rule_preset_key(rule)] == true
+  end
+  if state.selected_skin then select_profile(state.selected_skin) end
+  if state.selected_rule then select_rule(state.selected_rule) end
+  state.dirty = true
+  set_status('Applied preset ' .. preset_id .. '. Save JSON to apply it in-game.', false)
+end
+
+local function delete_selected_preset()
+  local preset_id = state.selected_preset
+  if not preset_id or not state.config.presets[preset_id] then
+    set_status('Select a preset to delete.', true)
+    return
+  end
+
+  state.config.presets[preset_id] = nil
+  clear_preset_editor()
+  state.dirty = true
+  set_status('Deleted the preset. Save JSON to keep the change.', false)
 end
 
 local function draw_profiles()
@@ -483,6 +639,35 @@ local function draw_profiles()
   imgui.EndGroup()
 end
 
+local function draw_presets()
+  imgui.BeginGroup()
+  imgui.BeginChild('##activation_presets', imgui.ImVec2(220, 120), true, imgui.WindowFlags.None)
+  imgui.Text('Activation presets')
+  imgui.Separator()
+  for _, preset_id in ipairs(sorted_keys(state.config.presets)) do
+    if imgui.Selectable(preset_id .. '##preset', state.selected_preset == preset_id) then
+      select_preset(preset_id)
+    end
+  end
+  imgui.EndChild()
+  if imgui.Button('New##preset', imgui.ImVec2(106, 0)) then clear_preset_editor() end
+  imgui.SameLine()
+  if imgui.Button('Delete##preset', imgui.ImVec2(106, 0)) then delete_selected_preset() end
+  imgui.EndGroup()
+
+  imgui.SameLine()
+  imgui.BeginGroup()
+  imgui.Text(state.selected_preset and 'Edit activation preset' or 'Capture an activation preset')
+  imgui.PushItemWidth(320)
+  input_text('Preset name', state.preset_name)
+  imgui.PopItemWidth()
+  if imgui.Button('Capture current##preset', imgui.ImVec2(156, 0)) then capture_preset() end
+  imgui.SameLine()
+  if imgui.Button('Apply selected##preset', imgui.ImVec2(156, 0)) then apply_selected_preset() end
+  imgui.TextDisabled('Presets save only enabled/disabled states for profiles and rules.')
+  imgui.EndGroup()
+end
+
 local function rule_profile_picker()
   local selected_profile_id = buffer_value(state.rule_profile_id)
   local preview = selected_profile_id ~= '' and selected_profile_id or 'Choose a profile...'
@@ -513,6 +698,47 @@ local function rule_profile_picker()
 
     if not found_match then
       imgui.TextDisabled('No matching profiles.')
+    end
+    imgui.EndCombo()
+  end
+end
+
+local function rule_player_name_selector()
+  local selected_name = buffer_value(state.rule_player_name)
+  local preview = selected_name ~= '' and selected_name or '<Any player>'
+
+  if imgui.BeginCombo('Player name##rule', preview) then
+    if imgui.IsWindowAppearing() then
+      imgui.SetKeyboardFocusHere()
+    end
+    if input_text('##rule_player_name', state.rule_player_name) then
+      sync_rule_conditions()
+    end
+    imgui.Separator()
+
+    local selected_name = buffer_value(state.rule_player_name)
+    local search = selected_name:lower()
+    if imgui.Selectable('<Any player>##empty_player_name', selected_name == '') then
+      set_buffer(state.rule_player_name, '')
+      sync_rule_conditions()
+    end
+    imgui.Separator()
+
+    local has_players = false
+    for _, player in ipairs(online_players()) do
+      if search == '' or player.nickname:lower():find(search, 1, true) then
+        has_players = true
+        local is_selected = selected_name == player.nickname
+        local label = string.format('[%d] %s##online_player_%d', player.id, player.nickname, player.id)
+        if imgui.Selectable(label, is_selected) then
+          set_buffer(state.rule_player_name, player.nickname)
+          sync_rule_conditions()
+        end
+      end
+    end
+
+    if not has_players then
+      imgui.TextDisabled('No matching connected players.')
     end
     imgui.EndCombo()
   end
@@ -566,7 +792,7 @@ local function draw_rules()
   imgui.BeginGroup()
   imgui.Text(state.selected_rule and 'Edit matching rule' or 'Add a rule to edit it')
   imgui.PushItemWidth(320)
-  if input_text('Player name (blank = any)', state.rule_player_name) then sync_rule_conditions() end
+  rule_player_name_selector()
   if input_int('Server model ID (-1 = any)', state.rule_server_model_id) then sync_rule_conditions() end
   rule_profile_picker()
   imgui.PopItemWidth()
@@ -582,7 +808,7 @@ imgui.OnFrame(
     return state.window_open[0] and isSampAvailable()
   end,
   function()
-    imgui.SetNextWindowSize(imgui.ImVec2(620, 560), imgui.Cond.FirstUseEver)
+    imgui.SetNextWindowSize(imgui.ImVec2(620, 710), imgui.Cond.FirstUseEver)
     imgui.Begin('Wardrobe', state.window_open, imgui.WindowFlags.None)
 
     imgui.Text('Edit the loader configuration. Changes affect the game only after Save JSON.')
@@ -592,6 +818,8 @@ imgui.OnFrame(
     end
     imgui.Separator()
     draw_profiles()
+    imgui.Separator()
+    draw_presets()
     imgui.Separator()
     draw_rules()
     imgui.Separator()

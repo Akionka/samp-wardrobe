@@ -40,6 +40,7 @@ from GTA's `CGame::Process` detour after the original game function returns.
 | [src/memory.rs](src/memory.rs) | Fallible process-memory reads. | `samp`, `gta`, `samp_hooks` |
 | [src/model_ids.rs](src/model_ids.rs) | GTA model-ID validity and Wardrobe private range. | `config`, `gta` |
 | [src/logging.rs](src/logging.rs) | `wardrobe.log` initialization. | `lib` |
+| [moonloader/wardrobe_ui/wardrobe_ui.lua](moonloader/wardrobe_ui/wardrobe_ui.lua) | Staged file editor, connected-player picker, and activation-preset UI. | MoonLoader SA-MP API, `ConfigWatcher` through `wardrobe.json` |
 
 ## Structs, enums, and ownership
 
@@ -113,6 +114,8 @@ refresh bits and never call the GTA bridge.
 | `Runtime::restore_server_model` | Restores `AppliedPlayer`'s last normal model with `gta::set_ped_model_index`, unless SA-MP already supplied a newer normal model. |
 | `Runtime::prune_streamed_out_players` | Removes per-player state after a complete streamed-ped scan. |
 | `Runtime::cleanup_retired_skins` | Turns `Samp::all_peds` results into model IDs and calls `SkinManager::cleanup_retired`. |
+| `online_players` (MoonLoader UI) | Refreshes connected SA-MP player names at most once a second for the searchable, editable rule-editor dropdown. |
+| `capture_preset` / `apply_selected_preset` (MoonLoader UI) | Save or restore only profile/rule enabled states in the UI-owned `presets` JSON field; the change remains staged until `save_config`. |
 | `SkinManager::apply_config` | Retires loaded profiles no longer referenced by an enabled rule and clears stale failure records. |
 | `SkinManager::is_private_model` | Lets Runtime distinguish Wardrobe's model from an ordinary server model. |
 | `SkinManager::model_for` | Reuses a current model, keeps a previous model after failure, or calls `gta::load_skin` for a replacement. |

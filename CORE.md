@@ -71,7 +71,11 @@ the prior working model when one exists and throttles repeated failures.
 
 The optional [MoonLoader editor](moonloader/wardrobe_ui/wardrobe_ui.lua) edits
 the same JSON file and writes it atomically, so the watcher does not observe a
-partial file.
+partial file. Its rule editor can list connected SA-MP players and fill the
+player-name selector. The editor also owns an optional top-level `presets`
+field: each named preset records only the enabled state of the existing
+profiles and rules. Applying one stages those states until **Save JSON**; Rust
+ignores the UI-only field and continues to own matching and asset loading.
 
 ## SA-MP version detection and player discovery
 

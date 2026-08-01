@@ -116,6 +116,12 @@ Copy it to `GTA_FOLDER/moonloader/`, then open it with:
 Use **Save JSON** when you are happy with your changes. The editor saves
 atomically, so Wardrobe never reads a half-written file.
 
+When editing a rule, the **Player name** dropdown lists connected SA-MP players
+and also accepts any typed name for an offline player. **Activation presets**
+capture only which existing profiles and rules are enabled. Select a preset and
+apply it to stage those switches, then use **Save JSON** to send the change to
+Wardrobe. Presets do not duplicate your skin paths or matching rules.
+
 ## If something does not work
 
 Wardrobe writes `wardrobe.log` in the GTA directory. Check it first.
