@@ -165,23 +165,23 @@ end
 local function validate_config()
   for skin_id, skin in pairs(state.config.skins) do
     if skin_id == '' then
-      return false, 'A profile has an empty ID.'
+      return false, 'A custom skin has an empty name.'
     end
     if type(skin) ~= 'table' or type(skin.enabled) ~= 'boolean' then
-      return false, 'Profile ' .. skin_id .. ' has an invalid enabled flag.'
+      return false, 'Custom skin ' .. skin_id .. ' has an invalid enabled flag.'
     end
     if type(skin.txd_path) ~= 'string' or type(skin.dff_path) ~= 'string' then
-      return false, 'Profile ' .. skin_id .. ' has an invalid asset path.'
+      return false, 'Custom skin ' .. skin_id .. ' has an invalid asset path.'
     end
     if skin.enabled and (skin.txd_path == '' or skin.dff_path == '') then
-      return false, 'Enabled profile ' .. skin_id .. ' needs TXD and DFF paths.'
+      return false, 'Enabled custom skin ' .. skin_id .. ' needs TXD and DFF paths.'
     end
     if type(skin.donor_model_id) ~= 'number'
         or skin.donor_model_id % 1 ~= 0
         or skin.donor_model_id < 0
         or skin.donor_model_id >= PRIVATE_MODEL_ID_START then
       return false,
-          'Profile ' .. skin_id .. ' needs a normal ped donor ID from 0 to ' .. (PRIVATE_MODEL_ID_START - 1) .. '.'
+          'Custom skin ' .. skin_id .. ' needs a normal ped donor ID from 0 to ' .. (PRIVATE_MODEL_ID_START - 1) .. '.'
     end
   end
 
@@ -190,7 +190,7 @@ local function validate_config()
       return false, 'Rule ' .. index .. ' has an invalid enabled flag.'
     end
     if type(rule.profile_id) ~= 'string' or not state.config.skins[rule.profile_id] then
-      return false, 'Rule ' .. index .. ' has no valid profile assignment.'
+      return false, 'Rule ' .. index .. ' has no valid custom skin assignment.'
     end
     if rule.player_name ~= nil and (type(rule.player_name) ~= 'string' or rule.player_name == '') then
       return false, 'Rule ' .. index .. ' has an invalid player name.'
@@ -341,10 +341,10 @@ local function select_profile(skin_id)
 end
 
 local function add_profile()
-  local skin_id = 'new_profile'
+  local skin_id = 'new_skin'
   local suffix = 2
   while state.config.skins[skin_id] do
-    skin_id = 'new_profile_' .. suffix
+    skin_id = 'new_skin_' .. suffix
     suffix = suffix + 1
   end
 
@@ -356,7 +356,7 @@ local function add_profile()
   }
   select_profile(skin_id)
   state.dirty = true
-  set_status('Added a draft profile. Changes are staged until Save JSON.', false)
+  set_status('Added a draft custom skin. Changes are staged until Save JSON.', false)
 end
 
 local function sync_profile_id()
@@ -365,13 +365,13 @@ local function sync_profile_id()
 
   local new_skin_id = trim(buffer_value(state.profile_id))
   if new_skin_id == '' then
-    set_status('Profile ID cannot be empty. The existing profile was kept.', true)
+    set_status('Skin name cannot be empty. The existing custom skin was kept.', true)
     return
   end
   if new_skin_id == old_skin_id then return end
   if state.config.skins[new_skin_id] then
     set_buffer(state.profile_id, old_skin_id)
-    set_status('A profile with that ID already exists.', true)
+    set_status('A custom skin with that name already exists.', true)
     return
   end
 
@@ -391,7 +391,7 @@ local function sync_profile_id()
   state.selected_skin = new_skin_id
   set_buffer(state.profile_id, new_skin_id)
   state.dirty = true
-  set_status('Profile changes are staged. Save JSON to apply them in-game.', false)
+  set_status('Custom skin changes are staged. Save JSON to apply them in-game.', false)
 end
 
 local function sync_profile_fields()
@@ -404,13 +404,13 @@ local function sync_profile_fields()
   skin.donor_model_id = state.donor_model_id[0]
   skin.enabled = state.profile_enabled[0]
   state.dirty = true
-  set_status('Profile changes are staged. Save JSON to apply them in-game.', false)
+  set_status('Custom skin changes are staged. Save JSON to apply them in-game.', false)
 end
 
 local function delete_selected_profile()
   local skin_id = state.selected_skin
   if not skin_id or not state.config.skins[skin_id] then
-    set_status('Select a profile to delete.', true)
+    set_status('Select a custom skin to delete.', true)
     return
   end
 
@@ -436,7 +436,7 @@ local function delete_selected_profile()
   state.rule_enabled[0] = true
   set_buffer(state.profile_search, '')
   state.dirty = true
-  set_status('Deleted the profile and its matching rules. Save JSON to apply.', false)
+  set_status('Deleted the custom skin and its matching rules. Save JSON to apply.', false)
 end
 
 local function clear_rule_editor()
@@ -463,7 +463,7 @@ end
 local function add_rule()
   local profile_ids = sorted_keys(state.config.skins)
   if #profile_ids == 0 then
-    set_status('Add a profile before creating a matching rule.', true)
+    set_status('Add a custom skin before creating a matching rule.', true)
     return
   end
 
@@ -482,7 +482,7 @@ local function sync_rule_profile()
   local profile_id = trim(buffer_value(state.rule_profile_id))
   if not rule then return end
   if not state.config.skins[profile_id] then
-    set_status('Choose an existing profile ID for this rule.', true)
+    set_status('Choose an existing custom skin for this rule.', true)
     return
   end
 
@@ -611,7 +611,7 @@ end
 local function draw_profiles()
   imgui.BeginGroup()
   imgui.BeginChild('##skin_profiles', imgui.ImVec2(220, 195), true, imgui.WindowFlags.None)
-  imgui.Text('Skin profiles')
+  imgui.Text('Custom skins')
   imgui.Separator()
   for _, skin_id in ipairs(sorted_keys(state.config.skins)) do
     local skin = state.config.skins[skin_id]
@@ -628,9 +628,9 @@ local function draw_profiles()
 
   imgui.SameLine()
   imgui.BeginGroup()
-  imgui.Text(state.selected_skin and 'Edit profile' or 'Add a profile to edit it')
+  imgui.Text(state.selected_skin and 'Edit custom skin' or 'Add a custom skin to edit it')
   imgui.PushItemWidth(320)
-  if input_text('Profile ID', state.profile_id) then sync_profile_id() end
+  if input_text('Skin name', state.profile_id) then sync_profile_id() end
   if input_text('TXD path', state.txd_path) then sync_profile_fields() end
   if input_text('DFF path', state.dff_path) then sync_profile_fields() end
   if input_int('Donor model ID', state.donor_model_id) then sync_profile_fields() end
@@ -664,20 +664,20 @@ local function draw_presets()
   if imgui.Button('Capture current##preset', imgui.ImVec2(156, 0)) then capture_preset() end
   imgui.SameLine()
   if imgui.Button('Apply selected##preset', imgui.ImVec2(156, 0)) then apply_selected_preset() end
-  imgui.TextDisabled('Presets save only enabled/disabled states for profiles and rules.')
+  imgui.TextDisabled('Presets save only enabled/disabled states for skins and rules.')
   imgui.EndGroup()
 end
 
 local function rule_profile_picker()
   local selected_profile_id = buffer_value(state.rule_profile_id)
-  local preview = selected_profile_id ~= '' and selected_profile_id or 'Choose a profile...'
+  local preview = selected_profile_id ~= '' and selected_profile_id or 'Choose a custom skin...'
 
-  if imgui.BeginCombo('Profile ID##rule', preview) then
+  if imgui.BeginCombo('Custom skin##rule', preview) then
     if imgui.IsWindowAppearing() then
       set_buffer(state.profile_search, '')
       imgui.SetKeyboardFocusHere()
     end
-    input_text_with_hint('##rule_profile_search', 'Search profiles...', state.profile_search)
+    input_text_with_hint('##rule_profile_search', 'Search custom skins...', state.profile_search)
     imgui.Separator()
 
     local search = buffer_value(state.profile_search):lower()
@@ -697,7 +697,7 @@ local function rule_profile_picker()
     end
 
     if not found_match then
-      imgui.TextDisabled('No matching profiles.')
+      imgui.TextDisabled('No matching custom skins.')
     end
     imgui.EndCombo()
   end
