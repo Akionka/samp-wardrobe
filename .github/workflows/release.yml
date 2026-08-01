@@ -7,7 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  DLL_NAME: wardrobe.dll
+  DLL_NAME: wardrobe.asi
   LUA_NAME: wardrobe_ui.lua
   DLL_PATH: target/i686-pc-windows-msvc/release/wardrobe.dll
   LUA_PATH: moonloader/wardrobe_ui/wardrobe_ui.lua
