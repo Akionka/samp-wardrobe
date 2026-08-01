@@ -63,7 +63,7 @@ from GTA's `CGame::Process` detour after the original game function returns.
 | `SampLayout` (private, [src/samp.rs](src/samp.rs)) | Version-specific offsets for net game, pools, names, and ped pointers. | Stored inside `Samp`; prevents one SA-MP version's layout from being used for another. |
 | [`Samp`](src/samp.rs) | Validated `samp.dll` base address and matching layout. | Owned by `Runtime`; scanned every poll; passed to `samp_hooks::install`. |
 | `PlayerId` ([src/samp.rs](src/samp.rs)) | `u16` player identity key. | Keys `Runtime`'s matched/applied maps. |
-| [`StreamedPed`](src/samp.rs) | Player ID, decoded name, and GTA ped pointer. | Produced by `Samp::streamed_peds`; consumed by `Runtime::process_game_frame`. |
+| [`StreamedPed`](src/samp.rs) | Player ID, optional decoded name, and GTA ped pointer. | Produced by `Samp::streamed_peds`; a missing name permits only model-based matching in `Runtime::process_game_frame`. |
 
 ### Runtime and resources
 
@@ -104,7 +104,7 @@ refresh bits and never call the GTA bridge.
 | `skin_source_revision` | Captures asset metadata. Called by `SkinManager::model_for` before choosing reuse/reload. |
 | `Samp::wait_for_load` | Detects a supported DLL and layout. Startup passes the resulting `Samp` to `runtime::install`. |
 | `Samp::base` / `version` | Expose validated DLL identity to logging and `samp_hooks::install`. |
-| `Samp::streamed_peds` | Produces application candidates, or `None` for an incomplete scan so Runtime retains state. |
+| `Samp::streamed_peds` | Produces application candidates, retaining peds with unavailable names for model-only matching; returns `None` only for an incomplete structural scan so Runtime retains state. |
 | `Samp::all_peds` | Produces a complete liveness list for old-model cleanup, or `None` to defer cleanup. |
 | `samp_hooks::install` | Validates R1 signatures and enables optional post-event detours. `runtime::install` logs a polling fallback on error. |
 | `samp_hooks::take_refresh_request` | Atomically provides an event reason to the next frame pass. |

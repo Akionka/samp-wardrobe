@@ -42,12 +42,12 @@ impl SkinRule {
         }
     }
 
-    fn matches(&self, player_name: &str, server_model_id: i16) -> bool {
+    fn matches(&self, player_name: Option<&str>, server_model_id: i16) -> bool {
         self.enabled
-            && self
-                .player_name
-                .as_deref()
-                .is_none_or(|expected| expected == player_name)
+            && match self.player_name.as_deref() {
+                Some(expected) => player_name == Some(expected),
+                None => true,
+            }
             && self
                 .server_model_id
                 .is_none_or(|expected| expected == server_model_id)
@@ -63,7 +63,11 @@ pub struct SkinConfig {
 }
 
 impl SkinConfig {
-    pub fn matching_rule(&self, player_name: &str, server_model_id: i16) -> Option<&SkinRule> {
+    pub fn matching_rule(
+        &self,
+        player_name: Option<&str>,
+        server_model_id: i16,
+    ) -> Option<&SkinRule> {
         (1..=3).rev().find_map(|priority| {
             self.rules.iter().find(|rule| {
                 rule.priority() == priority
@@ -299,24 +303,33 @@ mod tests {
 
         assert_eq!(
             config
-                .matching_rule("Jacob_Spencer", 67)
+                .matching_rule(Some("Jacob_Spencer"), 67)
                 .unwrap()
                 .profile_id,
             "combined"
         );
         assert_eq!(
-            config.matching_rule("Jacob_Spencer", 7).unwrap().profile_id,
+            config
+                .matching_rule(Some("Jacob_Spencer"), 7)
+                .unwrap()
+                .profile_id,
             "player"
         );
         assert_eq!(
-            config.matching_rule("Other_Player", 67).unwrap().profile_id,
+            config
+                .matching_rule(Some("Other_Player"), 67)
+                .unwrap()
+                .profile_id,
             "model"
         );
+
+        assert_eq!(config.matching_rule(None, 67).unwrap().profile_id, "model");
+        assert!(config.matching_rule(None, 7).is_none());
 
         config.skins.get_mut("combined").unwrap().enabled = false;
         assert_eq!(
             config
-                .matching_rule("Jacob_Spencer", 67)
+                .matching_rule(Some("Jacob_Spencer"), 67)
                 .unwrap()
                 .profile_id,
             "player"

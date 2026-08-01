@@ -124,7 +124,9 @@ pub type PlayerId = u16;
 
 pub struct StreamedPed {
     pub player_id: PlayerId,
-    pub name: String,
+    /// `None` when the player name is empty, malformed, or unreadable. The
+    /// ped remains usable for server-model-only rules.
+    pub name: Option<String>,
     pub address: *mut c_void,
 }
 
@@ -155,9 +157,10 @@ impl Samp {
         self.layout.version
     }
 
-    /// Returns every currently streamed SA-MP ped. `None` means a required
-    /// player-pool entry could not be read, so callers must retain existing
-    /// player state rather than treating the scan as empty.
+    /// Returns every currently streamed SA-MP ped. A missing player name is
+    /// represented on its `StreamedPed`; `None` means a required player-pool
+    /// or ped entry could not be read, so callers must retain existing player
+    /// state rather than treating the scan as empty.
     pub unsafe fn streamed_peds(&self) -> Option<Vec<StreamedPed>> {
         let player_pool = unsafe { self.player_pool()? };
         let mut peds = unsafe { self.streamed_remote_peds(player_pool)? };
@@ -233,7 +236,7 @@ impl Samp {
             return Some(None);
         };
         let name =
-            unsafe { read_msvc_string(player_pool, self.layout.player_pool_local_name_offset)? };
+            unsafe { read_msvc_string(player_pool, self.layout.player_pool_local_name_offset) };
         Some(Some(StreamedPed {
             player_id,
             name,
@@ -262,7 +265,7 @@ impl Samp {
             let Some(address) = (unsafe { self.remote_gta_ped(remote)? }) else {
                 continue;
             };
-            let name = unsafe { self.remote_player_name(remote)? };
+            let name = unsafe { self.remote_player_name(remote) };
             matches.push(StreamedPed {
                 player_id: player_id as PlayerId,
                 name,

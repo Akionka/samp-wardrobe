@@ -87,11 +87,13 @@ rejected before player-pool memory is read.  The researched entry points and
 layouts are documented in [docs/samp-addresses.md](docs/samp-addresses.md).
 
 [`Samp::streamed_peds`](src/samp.rs) returns [`StreamedPed`](src/samp.rs)
-values containing a SA-MP player ID, name, and GTA ped address.  Its `None`
-result means a required player-pool read was incomplete, not that no players
-are streamed.  `Runtime::process_game_frame` retains all player state in that
-case.  [`Samp::all_peds`](src/samp.rs) is a separate complete scan used when
-deciding whether old private resources may be destroyed.
+values containing a SA-MP player ID, optional decoded name, and GTA ped
+address. An unreadable or malformed name is isolated to that player: only
+name-based matching is skipped, while server-model rules continue to work.
+Its `None` result means a required player-pool or ped read was incomplete, not
+that no players are streamed. `Runtime::process_game_frame` retains all player
+state in that case. [`Samp::all_peds`](src/samp.rs) is a separate complete scan
+used when deciding whether old private resources may be destroyed.
 
 All game-owned memory is read through [`memory::read`](src/memory.rs) or
 `memory::read_bytes`, which use `ReadProcessMemory` rather than directly

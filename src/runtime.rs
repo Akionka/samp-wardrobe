@@ -87,6 +87,7 @@ impl Runtime {
             address,
         } in streamed_peds
         {
+            let name = name.as_deref();
             let Some(current_model_id) = (unsafe { gta::ped_model_id(address) }) else {
                 continue;
             };
@@ -102,7 +103,7 @@ impl Runtime {
                 unsafe {
                     self.restore_server_model(
                         player_id,
-                        &name,
+                        name,
                         address,
                         "losing its remembered server model",
                     )
@@ -110,21 +111,16 @@ impl Runtime {
                 continue;
             };
 
-            let Some(rule) = self.config.matching_rule(&name, server_model_id).cloned() else {
+            let Some(rule) = self.config.matching_rule(name, server_model_id).cloned() else {
                 unsafe {
-                    self.restore_server_model(player_id, &name, address, "having no matching rule")
+                    self.restore_server_model(player_id, name, address, "having no matching rule")
                 };
                 continue;
             };
             let skin_id = rule.profile_id;
             let Some(definition) = self.config.skins.get(&skin_id).cloned() else {
                 unsafe {
-                    self.restore_server_model(
-                        player_id,
-                        &name,
-                        address,
-                        "removing its skin profile",
-                    )
+                    self.restore_server_model(player_id, name, address, "removing its skin profile")
                 };
                 continue;
             };
@@ -132,7 +128,7 @@ impl Runtime {
                 unsafe {
                     self.restore_server_model(
                         player_id,
-                        &name,
+                        name,
                         address,
                         "disabling its skin profile",
                     )
@@ -141,7 +137,10 @@ impl Runtime {
             };
 
             if self.matched_players.insert(player_id) {
-                log::info!("matched {name} with server model {server_model_id} to skin {skin_id}");
+                log::info!(
+                    "matched player {player_id} ({}) with server model {server_model_id} to skin {skin_id}",
+                    name.unwrap_or("unavailable name")
+                );
             }
             let Some(model_id) = (unsafe { self.skins.model_for(&skin_id, &definition) }) else {
                 continue;
@@ -157,7 +156,10 @@ impl Runtime {
                         last_server_model_id: Some(server_model_id),
                     },
                 );
-                log::debug!("applied custom model {model_id} to {name}");
+                log::debug!(
+                    "applied custom model {model_id} to player {player_id} ({})",
+                    name.unwrap_or("unavailable name")
+                );
             } else {
                 let last_server_model_id = self
                     .applied_players
@@ -195,7 +197,7 @@ impl Runtime {
     unsafe fn restore_server_model(
         &mut self,
         player_id: PlayerId,
-        name: &str,
+        name: Option<&str>,
         ped: *mut std::ffi::c_void,
         reason: &str,
     ) {
@@ -220,13 +222,15 @@ impl Runtime {
             if current_model_id != server_model_id {
                 unsafe { gta::set_ped_model_index(ped, server_model_id as i32) };
                 log::info!(
-                    "restored server model {server_model_id} for {name} after {reason} for skin {}",
+                    "restored server model {server_model_id} for player {player_id} ({}) after {reason} for skin {}",
+                    name.unwrap_or("unavailable name"),
                     applied.skin_id
                 );
             }
         } else {
             log::warn!(
-                "cannot restore {name} after {reason} for skin {}; no server model was observed",
+                "cannot restore player {player_id} ({}) after {reason} for skin {}; no server model was observed",
+                name.unwrap_or("unavailable name"),
                 applied.skin_id
             );
         }
