@@ -34,7 +34,10 @@ const SET_PLAYER_SKIN_REFRESH: u8 = 1 << 1;
 
 static REFRESH_REASONS: AtomicU8 = AtomicU8::new(0);
 
-pub unsafe fn install(samp: &Samp) -> Result<(), String> {
+/// Installs optional R1 hooks after verifying the SA-MP version marker and
+/// every target's expected bytes. The raw detour operations stay contained in
+/// this guarded setup path.
+pub fn install(samp: &Samp) -> Result<(), String> {
     if samp.version() != SampVersion::V037R1 {
         return Err(format!(
             "guarded event-hook signatures are currently verified only for SA-MP 0.3.7-R1; {} will use polling",

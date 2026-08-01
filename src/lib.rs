@@ -1,4 +1,5 @@
 mod config;
+mod game_frame;
 mod gta;
 mod logging;
 mod memory;
@@ -18,7 +19,7 @@ fn plugin_thread() {
     logging::init();
 
     #[cfg(debug_assertions)]
-    while unsafe { winapi::um::debugapi::IsDebuggerPresent() } == 0 {
+    while !debugger_is_attached() {
         thread::sleep(Duration::from_millis(100));
     }
 
@@ -57,17 +58,23 @@ fn plugin_thread() {
     }
     log::info!("verified GTA San Andreas 1.0 US executable targets");
 
-    while !unsafe { gta::is_ready() } {
+    while !gta::is_ready() {
         thread::sleep(Duration::from_millis(100));
     }
     log::info!("GTA model system is ready");
 
-    if let Err(error) = unsafe { runtime::install(config, samp) } {
+    if let Err(error) = runtime::install(config, samp) {
         log::error!("could not install CGame::Process hook: {error}");
         return;
     }
     log::info!("installed CGame::Process hook");
     log::info!("watching {rule_count} configured rule(s) across {skin_count} skin(s)");
+}
+
+#[cfg(debug_assertions)]
+fn debugger_is_attached() -> bool {
+    // This Windows query has no input pointers or lifetime requirements.
+    unsafe { winapi::um::debugapi::IsDebuggerPresent() != 0 }
 }
 
 /*

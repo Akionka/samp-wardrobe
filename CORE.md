@@ -23,7 +23,9 @@ fixed GTA target is logged and leaves Wardrobe inactive.
 
 The background thread never loads a model or changes a ped.  `runtime::install`
 detours GTA's `CGame::Process`; `game_process_detour` calls GTA's original
-function first and then runs `Runtime::process_game_frame`.  All GTA and
+function first, creates a [`GameFrame`](src/game_frame.rs) capability, and then
+runs `Runtime::process_game_frame`.  Only that detour can construct the
+capability, and GTA/RenderWare mutation APIs require it.  All GTA and
 RenderWare changes—particularly [`gta::load_skin`](src/gta.rs),
 [`gta::release_skin_resources`](src/gta.rs), and
 [`gta::set_ped_model_index`](src/gta.rs)—therefore happen on GTA's frame
@@ -97,8 +99,10 @@ used when deciding whether old private resources may be destroyed.
 
 All game-owned memory is read through [`memory::read`](src/memory.rs) or
 `memory::read_bytes`, which use `ReadProcessMemory` rather than directly
-dereferencing a GTA/SA-MP pointer.  An unreadable or stale pointer therefore
-causes a fallible scan rather than an access violation on the game thread.
+dereferencing a GTA/SA-MP pointer. `memory::read` accepts only a sealed set of
+primitive and raw-pointer types whose every bit pattern is valid. An unreadable
+or stale pointer therefore causes a fallible scan rather than an access
+violation on the game thread.
 
 ## Applying and restoring a custom player model
 

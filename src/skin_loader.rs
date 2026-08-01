@@ -1,4 +1,5 @@
 use crate::config::{SkinConfig, SkinDefinition, SkinSourceRevision, skin_source_revision};
+use crate::game_frame::GameFrame;
 use crate::gta::{self, SkinResources};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -71,7 +72,12 @@ impl SkinManager {
         self.private_model_ids.contains(&(model_id as i32))
     }
 
-    pub unsafe fn model_for(&mut self, skin_id: &str, definition: &SkinDefinition) -> Option<i32> {
+    pub fn model_for(
+        &mut self,
+        frame: &GameFrame,
+        skin_id: &str,
+        definition: &SkinDefinition,
+    ) -> Option<i32> {
         let now = Instant::now();
         let loaded_model = self.loaded_models.get(skin_id);
         let checked_recently = self
@@ -113,7 +119,7 @@ impl SkinManager {
         }
 
         let recycled_model_id = self.take_recyclable_model_id();
-        let loaded_skin = unsafe { gta::load_skin(skin_id, definition, recycled_model_id) };
+        let loaded_skin = gta::load_skin(frame, skin_id, definition, recycled_model_id);
         match loaded_skin {
             Ok(resources) => {
                 let model_id = resources.model_id;
@@ -150,7 +156,7 @@ impl SkinManager {
         }
     }
 
-    pub unsafe fn cleanup_retired(&mut self, live_model_ids: Option<HashSet<i16>>) {
+    pub fn cleanup_retired(&mut self, frame: &GameFrame, live_model_ids: Option<HashSet<i16>>) {
         if self.retired_skins.is_empty() {
             return;
         }
@@ -173,7 +179,7 @@ impl SkinManager {
         });
 
         for retired in ready_for_cleanup {
-            if unsafe { gta::release_skin_resources(&retired.skin_id, retired.resources) } {
+            if gta::release_skin_resources(frame, &retired.skin_id, retired.resources) {
                 self.private_model_ids.remove(&retired.resources.model_id);
                 self.recyclable_model_ids.insert(retired.resources.model_id);
             } else {

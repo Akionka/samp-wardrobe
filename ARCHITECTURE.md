@@ -31,13 +31,14 @@ from GTA's `CGame::Process` detour after the original game function returns.
 | Module | Responsibility | Collaborates with |
 | --- | --- | --- |
 | [src/lib.rs](src/lib.rs) | DLL entry point and startup thread. | `logging`, `config`, `samp`, `gta`, `runtime` |
+| [src/game_frame.rs](src/game_frame.rs) | Private capability proving execution is in the post-`CGame::Process` frame phase. | `runtime`, `gta`, `skin_loader` |
 | [src/runtime.rs](src/runtime.rs) | Frame-thread orchestration, player mappings, restoration. | All runtime-facing modules |
 | [src/config.rs](src/config.rs) | JSON types, validation, rule matching, configuration revisions. | `model_ids`, `Runtime`, `SkinManager` |
 | [src/skin_loader.rs](src/skin_loader.rs) | Load/reload, retire, cleanup, and recycle private skin resources. | `config`, `gta`, `Runtime` |
 | [src/gta.rs](src/gta.rs) | GTA/RenderWare calls, ped model slots, TXD/DFF lifetime. | `memory`, `model_ids`, `SkinManager` |
 | [src/samp.rs](src/samp.rs) | SA-MP build detection and safe player/ped scanning. | `memory`, `Runtime`, `samp_hooks` |
 | [src/samp_hooks.rs](src/samp_hooks.rs) | Guarded R1 event hooks that request an early scan. | `memory`, `Samp`, `Runtime` |
-| [src/memory.rs](src/memory.rs) | Fallible process-memory reads. | `samp`, `gta`, `samp_hooks` |
+| [src/memory.rs](src/memory.rs) | Fallible, bit-pattern-safe process-memory reads. | `samp`, `gta`, `samp_hooks` |
 | [src/model_ids.rs](src/model_ids.rs) | GTA model-ID validity and Wardrobe private range. | `config`, `gta` |
 | [src/logging.rs](src/logging.rs) | `wardrobe.log` initialization. | `lib` |
 | [moonloader/wardrobe_ui/wardrobe_ui.lua](moonloader/wardrobe_ui/wardrobe_ui.lua) | Staged file editor, connected-player picker, and activation-preset UI. | MoonLoader SA-MP API, `ConfigWatcher` through `wardrobe.json` |
@@ -71,6 +72,7 @@ from GTA's `CGame::Process` detour after the original game function returns.
 | --- | --- | --- |
 | `AppliedPlayer` (private, [src/runtime.rs](src/runtime.rs)) | Applied skin ID, custom model ID, and last normal server model. | Lets Runtime match private IDs safely and restore a model after a mapping disappears. |
 | `Runtime` (private, [src/runtime.rs](src/runtime.rs)) | Owns all active state and polling time. | Stored once in `RUNTIME`; invoked by the GTA detour. |
+| `GameFrame` (private, [src/game_frame.rs](src/game_frame.rs)) | Unforgeable proof of the GTA frame thread after the original process call. | Required by all GTA/RenderWare mutation entry points. |
 | `LoadedSkin` (private, [src/skin_loader.rs](src/skin_loader.rs)) | Live `SkinResources` plus the revision that produced it. | Value in `SkinManager::loaded_models`. |
 | `RetiredSkin` (private, [src/skin_loader.rs](src/skin_loader.rs)) | Old resource set and its retirement time. | Held until no ped uses it and GTA teardown succeeds. |
 | [`SkinManager`](src/skin_loader.rs) | Active, failed, retired, protected, and recyclable skin state. | Owned by `Runtime`; delegates game work to `gta`. |
@@ -88,8 +90,10 @@ initializes two one-time globals:
   the `CGame::Process` detour and its trampoline.
 
 `game_process_detour` runs the original function through the trampoline, then
-locks `RUNTIME` and invokes `Runtime::process_game_frame`.  This is the only
-path to functions that mutate GTA/RenderWare state.  `samp_hooks::install` is
+constructs `GameFrame`, locks `RUNTIME`, and invokes
+`Runtime::process_game_frame`.  The capability is required by GTA/RenderWare
+mutation APIs, so the startup thread cannot call them by accident.
+`samp_hooks::install` is
 called after that frame hook is enabled; its SA-MP detours only set atomic
 refresh bits and never call the GTA bridge.
 
@@ -109,6 +113,7 @@ refresh bits and never call the GTA bridge.
 | `samp_hooks::install` | Validates R1 signatures and enables optional post-event detours. `runtime::install` logs a polling fallback on error. |
 | `samp_hooks::take_refresh_request` | Atomically provides an event reason to the next frame pass. |
 | `runtime::install` | Stores Runtime, creates/enables the GTA detour, and attempts optional SA-MP hooks. |
+| `GameFrame::enter` | Constructs the private frame capability only in the validated `CGame::Process` detour, after its trampoline returns. |
 | `Runtime::process_game_frame` | Central sequence: timing, config reload, scan, match, model load/assignment, restoration, pruning, and cleanup. Called only by `game_process_detour`. |
 | `Runtime::reload_config_if_changed` | Reconciles `SkinManager` with the watcher replacement before storing it as active config. |
 | `Runtime::restore_server_model` | Restores `AppliedPlayer`'s last normal model with `gta::set_ped_model_index`, unless SA-MP already supplied a newer normal model. |
@@ -125,7 +130,7 @@ refresh bits and never call the GTA bridge.
 | `gta::ped_model_id` / `set_ped_model_index` | Runtime's narrow read/write ped-model interface; setting is game-thread-only. |
 | `gta::load_skin` | Validates assets/donor, allocates or reuses a model and TXD slot, builds the clump, and returns a resource handle or failure. |
 | `gta::release_skin_resources` | Destroys a retired clump/TXD and leaves its model-info allocation inert for reuse. |
-| `memory::copy_process_memory`, `read`, `read_bytes` | Shared fallible memory boundary for SA-MP scanning, GTA table inspection, and signature checks. |
+| `memory::read`, `read_bytes` | Shared fallible memory boundary for SA-MP scanning, GTA table inspection, and signature checks. `read` accepts only sealed primitive/pointer types with no invalid bit patterns. |
 | `model_ids` predicates | Shared ID rules used by config validation and GTA model allocation. |
 
 Private helpers complete these contracts.  `Samp`'s pool, ped, and MSVC-string
@@ -136,7 +141,8 @@ helpers construct and validate version-specific targets.
 
 ## Safety and lifecycle rules
 
-1. GTA and RenderWare mutations must occur only from the frame detour.
+1. GTA and RenderWare mutations require `GameFrame`, which only the frame
+   detour can construct after calling GTA's original process function.
 2. Every fixed GTA/RenderWare code address is signature-checked before Wardrobe
    can install the frame detour or invoke it.
 3. SA-MP/GTA pointers are read through `memory` helpers; a failed scan is not

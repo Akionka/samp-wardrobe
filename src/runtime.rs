@@ -1,4 +1,5 @@
 use crate::config::{CONFIG_PATH, ConfigWatcher, SkinConfig};
+use crate::game_frame::GameFrame;
 use crate::gta;
 use crate::samp::{PlayerId, Samp, StreamedPed};
 use crate::samp_hooks;
@@ -45,7 +46,7 @@ impl Runtime {
         }
     }
 
-    unsafe fn process_game_frame(&mut self) {
+    fn process_game_frame(&mut self, frame: &GameFrame) {
         // The hook runs every GTA frame, but scanning a 1004-slot SA-MP pool
         // does not need to. Five polls per second keeps skin changes
         // responsive without doing the full scan on every frame. Guarded
@@ -68,12 +69,12 @@ impl Runtime {
         self.reload_config_if_changed();
 
         if self.config.rules.is_empty() && self.applied_players.is_empty() {
-            unsafe { self.cleanup_retired_skins() };
+            self.cleanup_retired_skins(frame);
             return;
         }
 
-        let Some(streamed_peds) = (unsafe { self.samp.streamed_peds() }) else {
-            unsafe { self.cleanup_retired_skins() };
+        let Some(streamed_peds) = self.samp.streamed_peds() else {
+            self.cleanup_retired_skins(frame);
             return;
         };
         let streamed_player_ids = streamed_peds
@@ -88,7 +89,7 @@ impl Runtime {
         } in streamed_peds
         {
             let name = name.as_deref();
-            let Some(current_model_id) = (unsafe { gta::ped_model_id(address) }) else {
+            let Some(current_model_id) = gta::ped_model_id(&address) else {
                 continue;
             };
 
@@ -100,39 +101,45 @@ impl Runtime {
                 Some(current_model_id)
             };
             let Some(server_model_id) = server_model_id else {
-                unsafe {
-                    self.restore_server_model(
-                        player_id,
-                        name,
-                        address,
-                        "losing its remembered server model",
-                    )
-                };
+                self.restore_server_model(
+                    frame,
+                    player_id,
+                    name,
+                    &address,
+                    "losing its remembered server model",
+                );
                 continue;
             };
 
             let Some(rule) = self.config.matching_rule(name, server_model_id).cloned() else {
-                unsafe {
-                    self.restore_server_model(player_id, name, address, "having no matching rule")
-                };
+                self.restore_server_model(
+                    frame,
+                    player_id,
+                    name,
+                    &address,
+                    "having no matching rule",
+                );
                 continue;
             };
             let skin_id = rule.profile_id;
             let Some(definition) = self.config.skins.get(&skin_id).cloned() else {
-                unsafe {
-                    self.restore_server_model(player_id, name, address, "removing its skin profile")
-                };
+                self.restore_server_model(
+                    frame,
+                    player_id,
+                    name,
+                    &address,
+                    "removing its skin profile",
+                );
                 continue;
             };
             if !definition.enabled {
-                unsafe {
-                    self.restore_server_model(
-                        player_id,
-                        name,
-                        address,
-                        "disabling its skin profile",
-                    )
-                };
+                self.restore_server_model(
+                    frame,
+                    player_id,
+                    name,
+                    &address,
+                    "disabling its skin profile",
+                );
                 continue;
             };
 
@@ -142,12 +149,12 @@ impl Runtime {
                     name.unwrap_or("unavailable name")
                 );
             }
-            let Some(model_id) = (unsafe { self.skins.model_for(&skin_id, &definition) }) else {
+            let Some(model_id) = self.skins.model_for(frame, &skin_id, &definition) else {
                 continue;
             };
 
             if current_model_id != model_id as i16 {
-                unsafe { gta::set_ped_model_index(address, model_id) };
+                gta::set_ped_model_index(frame, &address, model_id);
                 self.applied_players.insert(
                     player_id,
                     AppliedPlayer {
@@ -178,7 +185,7 @@ impl Runtime {
         }
 
         self.prune_streamed_out_players(&streamed_player_ids);
-        unsafe { self.cleanup_retired_skins() };
+        self.cleanup_retired_skins(frame);
     }
 
     fn reload_config_if_changed(&mut self) {
@@ -194,14 +201,15 @@ impl Runtime {
         log::info!("reloaded {CONFIG_PATH}: {skin_count} skin(s), {rule_count} rule(s)");
     }
 
-    unsafe fn restore_server_model(
+    fn restore_server_model(
         &mut self,
+        frame: &GameFrame,
         player_id: PlayerId,
         name: Option<&str>,
-        ped: *mut std::ffi::c_void,
+        ped: &gta::Ped,
         reason: &str,
     ) {
-        let Some(current_model_id) = (unsafe { gta::ped_model_id(ped) }) else {
+        let Some(current_model_id) = gta::ped_model_id(ped) else {
             return;
         };
         let Some(applied) = self.applied_players.get(&player_id).cloned() else {
@@ -220,7 +228,7 @@ impl Runtime {
 
         if let Some(server_model_id) = applied.last_server_model_id {
             if current_model_id != server_model_id {
-                unsafe { gta::set_ped_model_index(ped, server_model_id as i32) };
+                gta::set_ped_model_index(frame, ped, server_model_id as i32);
                 log::info!(
                     "restored server model {server_model_id} for player {player_id} ({}) after {reason} for skin {}",
                     name.unwrap_or("unavailable name"),
@@ -256,13 +264,13 @@ impl Runtime {
         }
     }
 
-    unsafe fn cleanup_retired_skins(&mut self) {
-        let live_model_ids = (unsafe { self.samp.all_peds() }).and_then(|peds| {
+    fn cleanup_retired_skins(&mut self, frame: &GameFrame) {
+        let live_model_ids = self.samp.all_peds().and_then(|peds| {
             peds.into_iter()
-                .map(|ped| unsafe { gta::ped_model_id(ped) })
+                .map(|ped| gta::ped_model_id(&ped))
                 .collect::<Option<HashSet<_>>>()
         });
-        unsafe { self.skins.cleanup_retired(live_model_ids) };
+        self.skins.cleanup_retired(frame, live_model_ids);
     }
 }
 
@@ -271,7 +279,10 @@ static GAME_PROCESS_HOOK: OnceLock<GenericDetour<GameProcessFn>> = OnceLock::new
 static DETOUR_ENTRY_LOGGED: AtomicBool = AtomicBool::new(false);
 static DETOUR_TRAMPOLINE_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub unsafe fn install(config: SkinConfig, samp: Samp) -> Result<(), String> {
+/// Installs Wardrobe's frame detour only after verifying every fixed GTA
+/// target used by the runtime. The raw detour setup remains local to this
+/// function so startup cannot bypass the executable guard.
+pub fn install(config: SkinConfig, samp: Samp) -> Result<(), String> {
     gta::validate_executable()?;
 
     let target_address = gta::cgame_process_address();
@@ -291,7 +302,7 @@ pub unsafe fn install(config: SkinConfig, samp: Samp) -> Result<(), String> {
     unsafe { hook.enable() }
         .map_err(|error| format!("could not enable CGame::Process hook: {error}"))?;
 
-    match unsafe { samp_hooks::install(&samp) } {
+    match samp_hooks::install(&samp) {
         Ok(()) => log::info!("installed guarded SA-MP spawn and skin-change hooks"),
         Err(error) => log::warn!("SA-MP event hooks are unavailable; using polling: {error}"),
     }
@@ -318,5 +329,6 @@ unsafe extern "cdecl" fn game_process_detour() {
         .get()
         .expect("runtime was initialized before the CGame::Process hook");
     let mut runtime = runtime.lock().unwrap_or_else(|error| error.into_inner());
-    unsafe { runtime.process_game_frame() };
+    let frame = unsafe { GameFrame::enter() };
+    runtime.process_game_frame(&frame);
 }

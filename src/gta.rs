@@ -1,4 +1,5 @@
 use crate::config::SkinDefinition;
+use crate::game_frame::GameFrame;
 use crate::memory;
 use crate::model_ids::{
     PRIVATE_MODEL_ID_END, PRIVATE_MODEL_ID_START, is_valid_donor_model_id, is_valid_model_id,
@@ -211,6 +212,24 @@ pub struct SkinLoadFailure {
     pub recyclable_model_id: Option<i32>,
 }
 
+/// A GTA `CPed` pointer obtained from a successful SA-MP scan. It is opaque so
+/// only the scanner can introduce a raw game pointer into the safe runtime API.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Ped {
+    address: *mut c_void,
+}
+
+impl Ped {
+    /// # Safety
+    ///
+    /// `address` must point to a live GTA `CPed` for the current game frame.
+    /// SA-MP's ped scanner establishes this after reading the active player
+    /// structures through `ReadProcessMemory`.
+    pub(crate) unsafe fn from_samp(address: *mut c_void) -> Self {
+        Self { address }
+    }
+}
+
 /// Rejects every GTA executable or code-patched installation that does not
 /// match the exact 1.0 US code addresses used below. This performs only safe
 /// process-memory reads; callers must run it before creating the frame detour
@@ -241,25 +260,26 @@ pub const fn cgame_process_address() -> usize {
     ADDR_CGAME_PROCESS
 }
 
-pub unsafe fn is_ready() -> bool {
-    unsafe { memory::read::<usize>(ADDR_MS_P_TXD_POOL).is_some_and(|pool| pool != 0) }
+pub fn is_ready() -> bool {
+    memory::read::<usize>(ADDR_MS_P_TXD_POOL).is_some_and(|pool| pool != 0)
 }
 
-pub unsafe fn ped_model_id(ped: *mut c_void) -> Option<i16> {
-    let model_index_address = (ped as usize).checked_add(ENTITY_MODEL_INDEX)?;
-    unsafe { memory::read(model_index_address) }
+pub fn ped_model_id(ped: &Ped) -> Option<i16> {
+    let model_index_address = (ped.address as usize).checked_add(ENTITY_MODEL_INDEX)?;
+    memory::read(model_index_address)
 }
 
-pub unsafe fn set_ped_model_index(ped: *mut c_void, model_id: i32) {
+pub fn set_ped_model_index(_frame: &GameFrame, ped: &Ped, model_id: i32) {
     type SetModelIndex = unsafe extern "thiscall" fn(*mut c_void, i32);
     let function: SetModelIndex = unsafe { std::mem::transmute(ADDR_CPED_SET_MODEL_INDEX) };
-    unsafe { function(ped, model_id) };
+    unsafe { function(ped.address, model_id) };
 }
 
 /// Loads one configured TXD/DFF pair into a private ped slot cloned from its
 /// configured vanilla donor model. A recycled slot keeps its CPedModelInfo
 /// allocation but has no RenderWare object or TXD attached.
-pub unsafe fn load_skin(
+pub fn load_skin(
+    _frame: &GameFrame,
     skin_id: &str,
     definition: &SkinDefinition,
     recycled_model_id: Option<i32>,
@@ -388,7 +408,7 @@ pub unsafe fn load_skin(
     Ok(SkinResources { model_id, txd_slot })
 }
 
-pub unsafe fn release_skin_resources(skin_id: &str, resources: SkinResources) -> bool {
+pub fn release_skin_resources(_frame: &GameFrame, skin_id: &str, resources: SkinResources) -> bool {
     let model_info = unsafe { get_model_info(resources.model_id) };
     if model_info.is_null() {
         log::error!(
@@ -468,18 +488,18 @@ unsafe fn delete_model_rw_object(model_info: *mut c_void) -> bool {
     }
 
     let rw_object_address = model_info as usize + MODEL_INFO_RW_OBJECT;
-    let Some(rw_object): Option<*mut c_void> = (unsafe { memory::read(rw_object_address) }) else {
+    let Some(rw_object): Option<*mut c_void> = memory::read(rw_object_address) else {
         return false;
     };
     if rw_object.is_null() {
         return true;
     }
 
-    let Some(vtable): Option<usize> = (unsafe { memory::read(model_info as usize) }) else {
+    let Some(vtable): Option<usize> = memory::read(model_info as usize) else {
         return false;
     };
     let Some(function_address): Option<usize> =
-        (unsafe { memory::read(vtable + VTABLE_DELETE_RW_OBJECT_OFFSET) })
+        memory::read(vtable + VTABLE_DELETE_RW_OBJECT_OFFSET)
     else {
         return false;
     };
@@ -604,7 +624,7 @@ unsafe fn get_model_info(model_id: i32) -> *mut c_void {
     else {
         return std::ptr::null_mut();
     };
-    unsafe { memory::read(model_info_address).unwrap_or_default() }
+    memory::read(model_info_address).unwrap_or_default()
 }
 
 /// Returns a donor only after proving it has CPedModelInfo's vtable. The
@@ -625,10 +645,10 @@ unsafe fn verified_ped_model_info(model_id: i32) -> Result<*mut c_void, &'static
         return Err("cannot be type-checked because GTA's known ped model is unavailable");
     }
 
-    let Some(donor_vtable): Option<usize> = (unsafe { memory::read(donor as usize) }) else {
+    let Some(donor_vtable): Option<usize> = memory::read(donor as usize) else {
         return Err("has an unreadable model-info vtable");
     };
-    let Some(ped_vtable): Option<usize> = (unsafe { memory::read(known_ped as usize) }) else {
+    let Some(ped_vtable): Option<usize> = memory::read(known_ped as usize) else {
         return Err("cannot be type-checked because GTA's known ped vtable is unreadable");
     };
     if donor_vtable != ped_vtable {
@@ -646,8 +666,7 @@ unsafe fn find_free_model_id() -> Option<i32> {
             log::error!("private model address calculation overflowed");
             return None;
         };
-        let Some(model_info): Option<*mut c_void> = (unsafe { memory::read(model_info_address) })
-        else {
+        let Some(model_info): Option<*mut c_void> = memory::read(model_info_address) else {
             log::error!("could not read GTA's model-info table while allocating a private model");
             return None;
         };
