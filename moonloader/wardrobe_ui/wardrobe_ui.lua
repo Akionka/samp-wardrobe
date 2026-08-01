@@ -118,12 +118,17 @@ local function online_players()
     if sampIsPlayerConnected(player_id) then
       local ok, nickname = pcall(sampGetPlayerNickname, player_id)
       if ok and type(nickname) == 'string' and nickname ~= '' then
-        table.insert(state.online_players, { id = player_id, nickname = nickname })
+        table.insert(state.online_players, {
+          id = player_id,
+          nickname = nickname,
+          is_npc = sampIsPlayerNpc(player_id),
+        })
       end
     end
   end
 
   table.sort(state.online_players, function(left, right)
+    if left.is_npc ~= right.is_npc then return not left.is_npc end
     return left.id < right.id
   end)
   return state.online_players
@@ -729,7 +734,14 @@ local function rule_player_name_selector()
       if search == '' or player.nickname:lower():find(search, 1, true) then
         has_players = true
         local is_selected = selected_name == player.nickname
-        local label = string.format('[%d] %s##online_player_%d', player.id, player.nickname, player.id)
+        local player_kind = player.is_npc and ' [NPC]' or ''
+        local label = string.format(
+          '[%d] %s%s##online_player_%d',
+          player.id,
+          player.nickname,
+          player_kind,
+          player.id
+        )
         if imgui.Selectable(label, is_selected) then
           set_buffer(state.rule_player_name, player.nickname)
           sync_rule_conditions()

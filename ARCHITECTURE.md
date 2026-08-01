@@ -114,7 +114,7 @@ refresh bits and never call the GTA bridge.
 | `Runtime::restore_server_model` | Restores `AppliedPlayer`'s last normal model with `gta::set_ped_model_index`, unless SA-MP already supplied a newer normal model. |
 | `Runtime::prune_streamed_out_players` | Removes per-player state after a complete streamed-ped scan. |
 | `Runtime::cleanup_retired_skins` | Turns `Samp::all_peds` results into model IDs and calls `SkinManager::cleanup_retired`. |
-| `online_players` (MoonLoader UI) | Refreshes connected SA-MP player names at most once a second for the searchable, editable rule-editor dropdown. |
+| `online_players` (MoonLoader UI) | Refreshes connected SA-MP player names at most once a second for the searchable, editable rule-editor dropdown; real players and NPCs are each ordered by player ID, with NPCs last. |
 | `capture_preset` / `apply_selected_preset` (MoonLoader UI) | Save or restore only skin/rule enabled states in the UI-owned `presets` JSON field; the change remains staged until `save_config`. |
 | `SkinManager::apply_config` | Retires loaded profiles no longer referenced by an enabled rule and clears stale failure records. |
 | `SkinManager::is_private_model` | Lets Runtime distinguish Wardrobe's model from an ordinary server model. |
