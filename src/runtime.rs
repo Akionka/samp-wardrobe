@@ -3,7 +3,7 @@ use crate::game_frame::GameFrame;
 use crate::gta;
 use crate::samp::{PlayerId, Samp, StreamedPed};
 use crate::samp_hooks;
-use crate::skin_loader::{InstanceSkinLookup, SkinManager};
+use crate::skin_loader::{SkinManager, SkinSourceLookup};
 use retour::GenericDetour;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,28 +13,70 @@ use std::time::{Duration, Instant};
 #[path = "runtime/lifecycle.rs"]
 mod lifecycle;
 
-use lifecycle::local_instance_reset_kind;
+use lifecycle::skin_clone_reset_kind;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 type GameProcessFn = unsafe extern "cdecl" fn();
 
-#[derive(Clone, Copy, Debug)]
-enum AppliedSkin {
-    PrivateModel { model_id: i32 },
-    InstanceClump { render_object: gta::PedRenderObject },
-}
-
 #[derive(Clone, Debug)]
 struct AppliedPlayer {
     skin_id: String,
-    // Captured before Wardrobe first changes the ped's model or render object.
-    last_server_model_id: Option<i16>,
-    skin: AppliedSkin,
+    // Captured before Wardrobe replaces the normal server clump.
+    server_model_id: i16,
+    render_object: gta::PedRenderObject,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FailedApplication {
+    skin_id: String,
+    source_generation: u64,
+    server_model_id: i16,
+    render_object: gta::PedRenderObject,
+}
+
+impl FailedApplication {
+    fn matches(
+        &self,
+        skin_id: &str,
+        source_generation: u64,
+        server_model_id: i16,
+        render_object: gta::PedRenderObject,
+    ) -> bool {
+        self.skin_id == skin_id
+            && self.source_generation == source_generation
+            && self.server_model_id == server_model_id
+            && self.render_object == render_object
+    }
+}
+
+fn streamed_profile_users(
+    applied_players: &HashMap<PlayerId, AppliedPlayer>,
+    streamed_player_ids: impl IntoIterator<Item = PlayerId>,
+    skin_id: &str,
+) -> Vec<PlayerId> {
+    streamed_player_ids
+        .into_iter()
+        .filter(|player_id| {
+            applied_players
+                .get(player_id)
+                .is_some_and(|applied| applied.skin_id == skin_id)
+        })
+        .collect()
+}
+
+fn retain_applied_sources(
+    desired_sources: &mut HashSet<String>,
+    applied_players: &HashMap<PlayerId, AppliedPlayer>,
+) {
+    desired_sources.extend(
+        applied_players
+            .values()
+            .map(|applied| applied.skin_id.clone()),
+    );
 }
 
 struct LivePedState {
-    model_ids: Option<HashSet<i16>>,
     render_objects: Option<HashSet<gta::PedRenderObject>>,
 }
 
@@ -45,6 +87,7 @@ struct Runtime {
     samp: Samp,
     matched_players: HashSet<PlayerId>,
     applied_players: HashMap<PlayerId, AppliedPlayer>,
+    failed_applications: HashMap<PlayerId, FailedApplication>,
     last_poll: Option<Instant>,
 }
 
@@ -57,6 +100,7 @@ impl Runtime {
             samp,
             matched_players: HashSet::new(),
             applied_players: HashMap::new(),
+            failed_applications: HashMap::new(),
             last_poll: None,
         }
     }
@@ -84,249 +128,240 @@ impl Runtime {
         self.reload_config_if_changed();
 
         if self.config.rules.is_empty() && self.applied_players.is_empty() {
-            self.skins.retain_instance_skins(&HashSet::new());
+            self.failed_applications.clear();
+            self.skins.retain_sources(&HashSet::new());
             let live_peds = self.live_ped_state();
-            self.cleanup_retired_skins(frame, live_peds);
+            self.cleanup_retired_sources(frame, live_peds);
             return;
         }
 
         let Some(streamed_peds) = self.samp.streamed_peds() else {
             let live_peds = self.live_ped_state();
-            self.cleanup_retired_skins(frame, live_peds);
+            self.cleanup_retired_sources(frame, live_peds);
             return;
         };
         let streamed_player_ids = streamed_peds
             .iter()
             .map(|ped| ped.player_id)
             .collect::<HashSet<_>>();
-        let mut desired_instance_skins = HashSet::new();
+        let mut desired_sources = HashSet::new();
+        let mut restoration_attempted_sources = HashSet::new();
 
         for StreamedPed {
             player_id,
-            is_local,
             name,
             address,
-        } in streamed_peds
+        } in &streamed_peds
         {
             let name = name.as_deref();
-            let Some(current_model_id) = gta::ped_model_id(&address) else {
+            let Some(current_model_id) = gta::ped_model_id(address) else {
+                continue;
+            };
+            let Some(current_render_object) = gta::ped_render_object(address) else {
                 continue;
             };
 
-            let role_changed = self.applied_players.get(&player_id).is_some_and(|applied| {
-                is_local != matches!(applied.skin, AppliedSkin::InstanceClump { .. })
-            });
-            if role_changed {
-                if is_local {
-                    self.restore_server_model(
-                        frame,
-                        player_id,
-                        name,
-                        &address,
-                        "changing between local and remote SA-MP roles",
-                    );
-                } else {
-                    self.applied_players.remove(&player_id);
-                    self.matched_players.remove(&player_id);
-                }
-                continue;
-            }
-
-            if is_local {
-                let Some(current_render_object) = gta::ped_render_object(&address) else {
-                    continue;
-                };
-                if let Some(AppliedPlayer {
-                    skin_id,
-                    last_server_model_id,
-                    skin: AppliedSkin::InstanceClump { render_object },
-                    ..
-                }) = self.applied_players.get(&player_id)
-                    && let Some(reset_kind) = local_instance_reset_kind(
-                        *render_object != current_render_object,
-                        *render_object != current_render_object
-                            && render_object.has_same_address(current_render_object),
-                        *last_server_model_id,
-                        current_model_id,
-                    )
-                {
-                    log::info!(
-                        "local player {player_id} ({}) received a server reset while instance skin {skin_id} was applied ({reset_kind}; remembered model {:?}, current model {current_model_id})",
-                        name.unwrap_or("unavailable name"),
-                        last_server_model_id
-                    );
-                    self.applied_players.remove(&player_id);
-                    self.matched_players.remove(&player_id);
-                }
-            }
-
-            let server_model_id = if !is_local && self.skins.is_private_model(current_model_id) {
-                self.applied_players
-                    .get(&player_id)
-                    .and_then(|applied| applied.last_server_model_id)
-            } else {
-                Some(current_model_id)
-            };
-            let Some(server_model_id) = server_model_id else {
-                self.restore_server_model(
-                    frame,
-                    player_id,
-                    name,
-                    &address,
-                    "losing its remembered server model",
+            if let Some(applied) = self.applied_players.get(player_id)
+                && let Some(reset_kind) = skin_clone_reset_kind(
+                    applied.render_object != current_render_object,
+                    applied
+                        .render_object
+                        .has_same_address(current_render_object),
+                    applied.server_model_id,
+                    current_model_id,
+                )
+            {
+                log::info!(
+                    "player {player_id} ({}) received a server reset while skin {} was applied ({reset_kind}; remembered model {}, current model {current_model_id})",
+                    name.unwrap_or("unavailable name"),
+                    applied.skin_id,
+                    applied.server_model_id,
                 );
-                continue;
-            };
+                self.applied_players.remove(player_id);
+                self.failed_applications.remove(player_id);
+                self.matched_players.remove(player_id);
+            }
 
+            let server_model_id = current_model_id;
             let Some(rule) = self.config.matching_rule(name, server_model_id).cloned() else {
                 self.restore_server_model(
                     frame,
-                    player_id,
+                    *player_id,
                     name,
-                    &address,
+                    address,
                     "having no matching rule",
                 );
+                self.failed_applications.remove(player_id);
                 continue;
             };
             let skin_id = rule.profile_id;
             let Some(definition) = self.config.skins.get(&skin_id).cloned() else {
                 self.restore_server_model(
                     frame,
-                    player_id,
+                    *player_id,
                     name,
-                    &address,
+                    address,
                     "removing its skin profile",
                 );
+                self.failed_applications.remove(player_id);
                 continue;
             };
             if !definition.enabled {
                 self.restore_server_model(
                     frame,
-                    player_id,
+                    *player_id,
                     name,
-                    &address,
+                    address,
                     "disabling its skin profile",
                 );
+                self.failed_applications.remove(player_id);
                 continue;
-            };
+            }
 
-            if self.matched_players.insert(player_id) {
+            if self.matched_players.insert(*player_id) {
                 log::info!(
                     "matched player {player_id} ({}) with server model {server_model_id} to skin {skin_id}",
                     name.unwrap_or("unavailable name")
                 );
             }
+            desired_sources.insert(skin_id.clone());
 
-            if is_local {
-                desired_instance_skins.insert(skin_id.clone());
-                let changed_skin = self.applied_players.get(&player_id).is_some_and(|applied| {
-                    matches!(applied.skin, AppliedSkin::InstanceClump { .. })
-                        && applied.skin_id != skin_id
-                });
-                if changed_skin {
-                    self.restore_server_model(
-                        frame,
-                        player_id,
-                        name,
-                        &address,
-                        "switching its local instance skin",
-                    );
-                    continue;
-                }
-
-                let already_applied = self.applied_players.get(&player_id).is_some_and(|applied| {
-                    matches!(applied.skin, AppliedSkin::InstanceClump { .. })
-                        && applied.skin_id == skin_id
-                });
-                match self.skins.instance_for(frame, &skin_id, &definition) {
-                    InstanceSkinLookup::Ready if already_applied => {}
-                    InstanceSkinLookup::Ready => {
-                        let resources = self
-                            .skins
-                            .instance_resources(&skin_id)
-                            .expect("ready instance skin has no resources");
-                        match gta::apply_instance_skin(frame, &address, server_model_id, resources)
-                        {
-                            Ok(render_object) => {
-                                self.applied_players.insert(
-                                    player_id,
-                                    AppliedPlayer {
-                                        skin_id,
-                                        last_server_model_id: Some(server_model_id),
-                                        skin: AppliedSkin::InstanceClump { render_object },
-                                    },
-                                );
-                                log::debug!(
-                                    "applied local instance skin to player {player_id} ({}); server model remains {server_model_id}",
-                                    name.unwrap_or("unavailable name")
-                                );
-                            }
-                            Err(reason) => {
-                                log::error!(
-                                    "could not apply local instance skin {skin_id} to player {player_id} ({}): {reason}; kept or recovered server model {server_model_id}",
-                                    name.unwrap_or("unavailable name")
-                                );
-                            }
-                        }
-                    }
-                    InstanceSkinLookup::ResetRequired => {
-                        self.restore_server_model(
-                            frame,
-                            player_id,
-                            name,
-                            &address,
-                            "changing its local instance source",
-                        );
-                    }
-                    InstanceSkinLookup::Unavailable => {}
-                }
+            let changed_skin = self
+                .applied_players
+                .get(player_id)
+                .is_some_and(|applied| applied.skin_id != skin_id);
+            if changed_skin {
+                self.restore_server_model(
+                    frame,
+                    *player_id,
+                    name,
+                    address,
+                    "switching its skin profile",
+                );
                 continue;
             }
 
-            let Some(model_id) = self.skins.model_for(frame, &skin_id, &definition) else {
-                continue;
-            };
+            let already_applied = self
+                .applied_players
+                .get(player_id)
+                .is_some_and(|applied| applied.skin_id == skin_id);
+            match self.skins.source_for(frame, &skin_id, &definition) {
+                SkinSourceLookup::Ready { .. } if already_applied => {}
+                SkinSourceLookup::Ready { generation } => {
+                    if self.application_failed(
+                        *player_id,
+                        &skin_id,
+                        generation,
+                        server_model_id,
+                        current_render_object,
+                    ) {
+                        continue;
+                    }
 
-            if current_model_id != model_id as i16 {
-                gta::set_ped_model_index(frame, &address, model_id);
-                self.applied_players.insert(
-                    player_id,
-                    AppliedPlayer {
-                        skin_id,
-                        last_server_model_id: Some(server_model_id),
-                        skin: AppliedSkin::PrivateModel { model_id },
-                    },
-                );
-                log::debug!(
-                    "applied custom model {model_id} to player {player_id} ({})",
-                    name.unwrap_or("unavailable name")
-                );
-            } else {
-                let last_server_model_id = self
-                    .applied_players
-                    .get(&player_id)
-                    .and_then(|applied| applied.last_server_model_id)
-                    .or(Some(server_model_id));
-                self.applied_players.insert(
-                    player_id,
-                    AppliedPlayer {
-                        skin_id,
-                        last_server_model_id,
-                        skin: AppliedSkin::PrivateModel { model_id },
-                    },
-                );
+                    let resources = self
+                        .skins
+                        .source_resources(&skin_id)
+                        .expect("ready skin source has no resources");
+                    match gta::apply_skin_source(frame, address, server_model_id, resources) {
+                        Ok(render_object) => {
+                            self.skins.record_clone(&skin_id, render_object);
+                            self.applied_players.insert(
+                                *player_id,
+                                AppliedPlayer {
+                                    skin_id,
+                                    server_model_id,
+                                    render_object,
+                                },
+                            );
+                            self.failed_applications.remove(player_id);
+                            log::debug!(
+                                "applied skin source to player {player_id} ({}); server model remains {server_model_id}",
+                                name.unwrap_or("unavailable name")
+                            );
+                        }
+                        Err(reason) => {
+                            let restored_render_object =
+                                gta::ped_render_object(address).unwrap_or(current_render_object);
+                            self.failed_applications.insert(
+                                *player_id,
+                                FailedApplication {
+                                    skin_id: skin_id.clone(),
+                                    source_generation: generation,
+                                    server_model_id,
+                                    render_object: restored_render_object,
+                                },
+                            );
+                            log::error!(
+                                "could not apply skin source {skin_id} to player {player_id} ({}): {reason}; kept or recovered server model {server_model_id}",
+                                name.unwrap_or("unavailable name")
+                            );
+                        }
+                    }
+                }
+                SkinSourceLookup::RestoreRequired => {
+                    if restoration_attempted_sources.insert(skin_id.clone()) {
+                        self.restore_profile_users(
+                            frame,
+                            &streamed_peds,
+                            &skin_id,
+                            "changing its shared skin source",
+                        );
+                    }
+                }
+                SkinSourceLookup::Unavailable => {}
             }
         }
 
-        self.skins.retain_instance_skins(&desired_instance_skins);
+        // A transient ped-model/render-object read leaves an applied clone in
+        // place. Its source must remain loaded until a healthy pass can either
+        // restore that clone or observe a server reset.
+        retain_applied_sources(&mut desired_sources, &self.applied_players);
+        self.skins.retain_sources(&desired_sources);
         let live_peds = self.live_ped_state();
-        self.prune_streamed_out_players(
-            &streamed_player_ids,
-            live_peds
-                .as_ref()
-                .and_then(|state| state.render_objects.as_ref()),
+        self.prune_streamed_out_players(&streamed_player_ids);
+        self.cleanup_retired_sources(frame, live_peds);
+    }
+
+    fn application_failed(
+        &self,
+        player_id: PlayerId,
+        skin_id: &str,
+        source_generation: u64,
+        server_model_id: i16,
+        render_object: gta::PedRenderObject,
+    ) -> bool {
+        self.failed_applications
+            .get(&player_id)
+            .is_some_and(|failed| {
+                failed.matches(skin_id, source_generation, server_model_id, render_object)
+            })
+    }
+
+    fn restore_profile_users(
+        &mut self,
+        frame: &GameFrame,
+        streamed_peds: &[StreamedPed],
+        skin_id: &str,
+        reason: &str,
+    ) {
+        let player_ids = streamed_profile_users(
+            &self.applied_players,
+            streamed_peds.iter().map(|ped| ped.player_id),
+            skin_id,
         );
-        self.cleanup_retired_skins(frame, live_peds);
+        for player_id in player_ids {
+            let ped = streamed_peds
+                .iter()
+                .find(|ped| ped.player_id == player_id)
+                .expect("streamed source user disappeared during restoration");
+            self.restore_server_model(
+                frame,
+                ped.player_id,
+                ped.name.as_deref(),
+                &ped.address,
+                reason,
+            );
+        }
     }
 
     fn reload_config_if_changed(&mut self) {
@@ -339,6 +374,7 @@ impl Runtime {
         self.skins.apply_config(&config);
         self.config = config;
         self.matched_players.clear();
+        self.failed_applications.clear();
         log::info!("reloaded {CONFIG_PATH}: {skin_count} skin(s), {rule_count} rule(s)");
     }
 }
@@ -400,4 +436,84 @@ unsafe extern "cdecl" fn game_process_detour() {
     let mut runtime = runtime.lock().unwrap_or_else(|error| error.into_inner());
     let frame = unsafe { GameFrame::enter() };
     runtime.process_game_frame(&frame);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AppliedPlayer, FailedApplication, gta, retain_applied_sources, streamed_profile_users,
+    };
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn a_source_generation_change_makes_a_failed_application_eligible() {
+        let failed = FailedApplication {
+            skin_id: "staff".to_owned(),
+            source_generation: 1,
+            server_model_id: 7,
+            render_object: gta::PedRenderObject::for_test(0x1000, 0x2000),
+        };
+        assert!(failed.matches(
+            "staff",
+            1,
+            7,
+            gta::PedRenderObject::for_test(0x1000, 0x2000)
+        ));
+        assert!(!failed.matches(
+            "staff",
+            2,
+            7,
+            gta::PedRenderObject::for_test(0x1000, 0x2000)
+        ));
+    }
+
+    #[test]
+    fn a_source_change_selects_every_currently_streamed_profile_user_for_restoration() {
+        let render_object = gta::PedRenderObject::for_test(0x1000, 0x2000);
+        let mut applied = HashMap::new();
+        applied.insert(
+            1,
+            AppliedPlayer {
+                skin_id: "staff".to_owned(),
+                server_model_id: 7,
+                render_object,
+            },
+        );
+        applied.insert(
+            2,
+            AppliedPlayer {
+                skin_id: "staff".to_owned(),
+                server_model_id: 15,
+                render_object,
+            },
+        );
+        applied.insert(
+            3,
+            AppliedPlayer {
+                skin_id: "visitor".to_owned(),
+                server_model_id: 20,
+                render_object,
+            },
+        );
+
+        assert_eq!(streamed_profile_users(&applied, [2, 3, 1], "staff"), [2, 1]);
+    }
+
+    #[test]
+    fn retained_applied_clone_keeps_its_source_desired_after_a_ped_read_failure() {
+        let mut applied = HashMap::new();
+        applied.insert(
+            1,
+            AppliedPlayer {
+                skin_id: "staff".to_owned(),
+                server_model_id: 7,
+                render_object: gta::PedRenderObject::for_test(0x1000, 0x2000),
+            },
+        );
+        let mut desired_sources = HashSet::new();
+
+        retain_applied_sources(&mut desired_sources, &applied);
+
+        assert_eq!(desired_sources, HashSet::from(["staff".to_owned()]));
+    }
 }

@@ -7,8 +7,8 @@
 - [x] Throttle polling. The current game-thread pass can scan up to 1004 SA-MP
   slots per frame; run it roughly every 200 ms while still reapplying a custom
   model as soon as the next poll observes a server-side skin reset.
-- [x] Add clear diagnostic logging for player-name matches, skin IDs, private
-  model IDs, missing assets, invalid JSON mappings, and unavailable donor
+- [x] Add clear diagnostic logging for player-name matches, skin profiles,
+  source changes, missing assets, invalid JSON mappings, and unavailable donor
   models.
 
 ## Configuration and lifecycle
@@ -16,23 +16,20 @@
 - [x] Auto-reload `wardrobe.json` without restarting GTA. New
   profiles and matching rules become available safely.
 - [x] Support live skin-profile replacement when its TXD path, DFF path, or
-  donor model changes. Build a replacement into a fresh private model slot and
-  move every assigned streamed-in ped to it on the game thread. Superseded
-  resources deliberately remain alive until GTA exits.
-- [x] Detect TXD/DFF file changes even when `wardrobe.json` is
-  unchanged. Compare modification time and file length about once per second,
-  then rebuild the affected skin and move configured local/remote players to
-  the replacement model.
-- [x] Support profile or matching-rule removal. Restore every affected streamed-in
-  ped to the most recently observed normal server model. Track that model when
-  SA-MP changes a ped away from a loader-owned private model.
-- [x] Safely clean obsolete private skin resources. After all live SA-MP peds
-  have detached, destroy the model's RenderWare object, release/remove its TXD
-  slot, and recycle the inert CPedModelInfo entry without returning it to GTA's
-  global model-info table.
+  donor model changes. Restore every streamed clone using the old source,
+  release it only after clone-identity liveness permits it, then load and apply
+  the replacement on the game thread.
+- [x] Detect TXD/DFF file changes even when `wardrobe.json` is unchanged.
+  Compare modification time and file length about once per second, then rebuild
+  the affected shared source for all matching local and remote players.
+- [x] Support profile or matching-rule removal. Restore every affected
+  streamed-in ped to the most recently observed normal server model and retain
+  newer server resets.
+- [x] Safely clean obsolete shared skin sources. Release their source clump and
+  TXD only after a complete scan finds no recorded installed clone identity.
 - [ ] Stress-test repeated live reloads and profile removals, including shared
-  skins and streamed-out remote players, to verify that private model/TXD
-  counts remain stable.
+  sources and streamed-out remote players, to verify that source/TXD counts
+  remain stable.
 - [x] Support toggling an individual matching rule or skin profile on and off.
 - [x] Preserve and document the first-run behavior: create a missing
   `wardrobe.json` as `{}` and remain idle until a matching rule exists.
@@ -50,11 +47,10 @@
   GTA/RenderWare call target to match exact bytes; log a clear error and remain
   inactive when a target is unknown or already patched.
 - [x] Smoke-test compatibility with Fastman92 Limit Adjuster both enabled and
-  disabled. The tested configurations preserve Wardrobe's private model IDs
-  and required call targets; continue to reject any setup that patches a
-  required entry point.
-- [x] Prune applied and matched player state after a complete SA-MP scan when
-  a player streams out.
+  disabled. Wardrobe uses no private GTA model IDs and continues to reject any
+  setup that patches a required entry point.
+- [x] Prune applied, matched, and failed-application state after a complete
+  SA-MP scan when a player streams out.
 
 ## Future event-driven detection
 
@@ -81,7 +77,7 @@
 - [x] Add an optional MoonLoader (Lua) ImGui configuration UI after the
   configuration/reload workflow is stable. Keep it as a file-based front-end:
   Lua reads and edits `wardrobe.json`, while the Rust ASI continues
-  to own GTA model loading and observes changes through its existing reload
+  to own GTA skin-source loading and observes changes through its existing reload
   path. Do not introduce Lua-to-Rust FFI for this.
 - [x] Make the MoonLoader UI save JSON atomically (write a temporary file, then
   rename it) so the Rust loader never observes a partially written config.

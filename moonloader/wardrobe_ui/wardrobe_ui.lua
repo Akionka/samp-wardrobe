@@ -10,7 +10,7 @@ local new = imgui.new
 local CONFIG_PATH = getGameDirectory() .. [[\wardrobe.json]]
 local TEMP_CONFIG_PATH = CONFIG_PATH .. '.tmp'
 -- Keep this in sync with src/model_ids.rs.
-local PRIVATE_MODEL_ID_START = 18000
+local MODEL_ID_LIMIT = 20000
 local MOVEFILE_REPLACE_EXISTING = 0x1
 local MOVEFILE_WRITE_THROUGH = 0x8
 local ONLINE_PLAYER_REFRESH_SECONDS = 1
@@ -184,9 +184,9 @@ local function validate_config()
     if type(skin.donor_model_id) ~= 'number'
         or skin.donor_model_id % 1 ~= 0
         or skin.donor_model_id < 0
-        or skin.donor_model_id >= PRIVATE_MODEL_ID_START then
-      return false,
-          'Custom skin ' .. skin_id .. ' needs a normal ped donor ID from 0 to ' .. (PRIVATE_MODEL_ID_START - 1) .. '.'
+        or skin.donor_model_id >= MODEL_ID_LIMIT then
+        return false,
+          'Custom skin ' .. skin_id .. ' needs a GTA model donor ID from 0 to ' .. (MODEL_ID_LIMIT - 1) .. '.'
     end
   end
 

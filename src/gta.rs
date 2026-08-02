@@ -1,18 +1,14 @@
 use crate::config::SkinDefinition;
 use crate::game_frame::GameFrame;
 use crate::memory;
-use crate::model_ids::{
-    PRIVATE_MODEL_ID_END, PRIVATE_MODEL_ID_START, is_valid_donor_model_id, is_valid_model_id,
-};
+use crate::model_ids::is_valid_model_id;
 use std::ffi::{CString, c_void};
-use std::path::Path;
 
-#[path = "gta/instance_skin.rs"]
-mod instance_skin;
+#[path = "gta/skin_source.rs"]
+mod skin_source;
 
 // GTA SA 1.0 US (Hoodlum), 32-bit only.
 const ADDR_CGAME_PROCESS: usize = 0x53BEE0;
-const ADDR_CMODELINFO_ADD_PED_MODEL: usize = 0x4C67A0;
 const ADDR_MS_P_TXD_POOL: usize = 0xC8800C;
 const ADDR_MS_MODEL_INFO_PTRS: usize = 0xA9B0C8; // CBaseModelInfo* [20000]
 
@@ -35,7 +31,6 @@ const ADDR_CTXDSTORE_POPCURRENTTXD: usize = 0x7316B0;
 const ADDR_CTXDSTORE_SETCURRENTTXD: usize = 0x7319C0;
 
 const ADDR_CPED_SET_MODEL_INDEX: usize = 0x5E4880;
-const ADDR_CPEDMODELINFO_SETCLUMP: usize = 0x4C7340;
 const ADDR_CPED_DELETE_RW_OBJECT: usize = 0x5DEBF0;
 const ADDR_CENTITY_CREATE_RW_OBJECT: usize = 0x533D30;
 const ADDR_CTASKSIMPLEIKMANAGER_MAKE_ABORTABLE: usize = 0x6338A0;
@@ -70,13 +65,6 @@ const ADDR_RWFRAME_TRANSFORM: usize = 0x7F0F70;
 const ADDR_RPANIMBLEND_CLUMP_OFFSET: usize = 0xB5F878;
 
 // CBaseModelInfo and CEntity offsets in GTA SA 1.0 US.
-const MODEL_INFO_TXD_INDEX: usize = 0x0A;
-const MODEL_INFO_FLAGS: usize = 0x12;
-const MODEL_INFO_RW_OBJECT: usize = 0x1C;
-const MODEL_INFO_COPY_START: usize = 0x0C;
-const PED_MODEL_INFO_SIZE: usize = 0x44;
-const PED_MODEL_INFO_HIT_COL_MODEL: usize = 0x34;
-const MODEL_FLAG_OWNS_COLLISION: u16 = 1 << 5;
 const ENTITY_MODEL_INDEX: usize = 0x22;
 const ENTITY_RW_OBJECT: usize = 0x18;
 const VTABLE_DELETE_RW_OBJECT_OFFSET: usize = 0x20;
@@ -146,27 +134,11 @@ const EXECUTABLE_SIGNATURES: &[ExecutableSignature] = &[
         ],
     },
     ExecutableSignature {
-        name: "CModelInfo::AddPedModel",
-        address: ADDR_CMODELINFO_ADD_PED_MODEL,
-        expected: &[
-            0xA1, 0xF8, 0x78, 0xB4, 0x00, 0x56, 0x8B, 0xF0, 0x6B, 0xF6, 0x44, 0x81, 0xC6, 0xFC,
-            0x78, 0xB4,
-        ],
-    },
-    ExecutableSignature {
         name: "CPed::SetModelIndex",
         address: ADDR_CPED_SET_MODEL_INDEX,
         expected: &[
             0x56, 0x8B, 0xF1, 0x81, 0x4E, 0x1C, 0x80, 0x00, 0x00, 0x00, 0x8B, 0x44, 0x24, 0x08,
             0x57, 0x50,
-        ],
-    },
-    ExecutableSignature {
-        name: "CPedModelInfo::SetClump",
-        address: ADDR_CPEDMODELINFO_SETCLUMP,
-        expected: &[
-            0x56, 0x57, 0x8B, 0x7C, 0x24, 0x0C, 0x57, 0x8B, 0xF1, 0xE8, 0x22, 0xDC, 0xFF, 0xFF,
-            0x68, 0x68,
         ],
     },
     ExecutableSignature {
@@ -491,17 +463,10 @@ const EXECUTABLE_SIGNATURES: &[ExecutableSignature] = &[
     },
 ];
 
-#[derive(Clone, Copy, Debug)]
-pub struct SkinResources {
-    pub model_id: i32,
-    pub txd_slot: i32,
-}
-
-/// Source resources for the local-player instance path. The source clump and
-/// donor pointer remain opaque outside this module so callers cannot install,
-/// clone, or destroy raw RenderWare objects themselves.
+/// Prepared TXD/source-clump resources shared by every ped using a profile.
+/// The raw RenderWare objects remain opaque outside this module.
 #[derive(Debug)]
-pub struct InstanceSkinResources {
+pub struct SkinSourceResources {
     txd_slot: i32,
     source_clump: SourceClump,
     donor_model_info: PedModelInfo,
@@ -512,7 +477,7 @@ struct SourceClump {
     address: usize,
 }
 
-struct PreparedInstanceClump {
+struct PreparedSkinClump {
     address: *mut c_void,
     bone_frames: [*mut c_void; PED_BONE_COUNT],
     frame_count: u32,
@@ -550,11 +515,11 @@ impl PedRenderObject {
     pub(crate) const fn has_same_address(self, other: Self) -> bool {
         self.address == other.address
     }
-}
 
-#[derive(Debug)]
-pub struct SkinLoadFailure {
-    pub recyclable_model_id: Option<i32>,
+    #[cfg(test)]
+    pub(crate) const fn for_test(address: usize, geometry: usize) -> Self {
+        Self { address, geometry }
+    }
 }
 
 /// A GTA `CPed` pointer obtained from a successful SA-MP scan. It is opaque so
@@ -626,211 +591,46 @@ pub fn set_ped_model_index(_frame: &GameFrame, ped: &Ped, model_id: i32) {
     unsafe { function(ped.address, model_id) };
 }
 
-/// Loads a TXD and raw source clump for the local-player instance path. Unlike
-/// `load_skin`, this never allocates or mutates a GTA model-info slot.
-pub fn load_instance_skin(
+/// Loads one TXD and prepared source clump without allocating or mutating a
+/// GTA model-info slot.
+pub fn load_skin_source(
     frame: &GameFrame,
     skin_id: &str,
     definition: &SkinDefinition,
-) -> Option<InstanceSkinResources> {
-    instance_skin::load(frame, skin_id, definition)
+) -> Option<SkinSourceResources> {
+    skin_source::load(frame, skin_id, definition)
 }
 
-/// Clones and installs a local-player render object while preserving the ped's
-/// model index. Failures either leave the original clump untouched or recover
-/// GTA's ordinary clump for `server_model_id` after a swap has started.
-pub fn apply_instance_skin(
+/// Clones and installs a custom render object while preserving the ped's model
+/// index. Failures either leave the original clump untouched or recover GTA's
+/// ordinary clump for `server_model_id` after a swap has started.
+pub fn apply_skin_source(
     frame: &GameFrame,
     ped: &Ped,
     server_model_id: i16,
-    resources: &InstanceSkinResources,
+    resources: &SkinSourceResources,
 ) -> Result<PedRenderObject, &'static str> {
-    instance_skin::apply(frame, ped, server_model_id, resources)
+    skin_source::apply(frame, ped, server_model_id, resources)
 }
 
-/// Removes a matching local instance clump through the ped's virtual entity
-/// lifecycle and lets CPed rebuild the remembered server model. Animation
-/// associations are transferred exactly as GTA does for a clothing rebuild.
-pub fn restore_instance_skin(
+/// Removes a matching custom clump through the ped's virtual entity lifecycle
+/// and lets CPed rebuild the remembered server model. Animation associations
+/// are transferred exactly as GTA does for a clothing rebuild.
+pub fn restore_skin_source(
     frame: &GameFrame,
     ped: &Ped,
     server_model_id: i16,
     installed: PedRenderObject,
 ) -> Result<(), &'static str> {
-    instance_skin::restore(frame, ped, server_model_id, installed)
+    skin_source::restore(frame, ped, server_model_id, installed)
 }
 
-pub fn release_instance_skin_resources(
+pub fn release_skin_source_resources(
     frame: &GameFrame,
     skin_id: &str,
-    resources: &InstanceSkinResources,
+    resources: &SkinSourceResources,
 ) -> bool {
-    instance_skin::release(frame, skin_id, resources)
-}
-
-/// Loads one configured TXD/DFF pair into a private ped slot cloned from its
-/// configured vanilla donor model. A recycled slot keeps its CPedModelInfo
-/// allocation but has no RenderWare object or TXD attached.
-pub fn load_skin(
-    _frame: &GameFrame,
-    skin_id: &str,
-    definition: &SkinDefinition,
-    recycled_model_id: Option<i32>,
-) -> Result<SkinResources, SkinLoadFailure> {
-    if !Path::new(&definition.txd_path).is_file() {
-        log::error!(
-            "skin {skin_id}: TXD file does not exist or is not a file: {}",
-            definition.txd_path
-        );
-        return Err(SkinLoadFailure {
-            recyclable_model_id: recycled_model_id,
-        });
-    }
-    if !Path::new(&definition.dff_path).is_file() {
-        log::error!(
-            "skin {skin_id}: DFF file does not exist or is not a file: {}",
-            definition.dff_path
-        );
-        return Err(SkinLoadFailure {
-            recyclable_model_id: recycled_model_id,
-        });
-    }
-
-    let donor_model_info = match unsafe { verified_ped_model_info(definition.donor_model_id) } {
-        Ok(model_info) => model_info,
-        Err(reason) => {
-            log::error!(
-                "skin {skin_id}: donor model {} {reason}",
-                definition.donor_model_id
-            );
-            return Err(SkinLoadFailure {
-                recyclable_model_id: recycled_model_id,
-            });
-        }
-    };
-
-    log::info!(
-        "loading skin {skin_id}: donor={}, txd={}, dff={}",
-        definition.donor_model_id,
-        definition.txd_path,
-        definition.dff_path
-    );
-
-    let model_id = match recycled_model_id {
-        Some(model_id) => model_id,
-        None => match unsafe { find_free_model_id() } {
-            Some(model_id) => model_id,
-            None => {
-                return Err(SkinLoadFailure {
-                    recyclable_model_id: None,
-                });
-            }
-        },
-    };
-    let txd_name = CString::new(format!("csl_{model_id}")).expect("model ID cannot contain NUL");
-    let txd_path = match CString::new(definition.txd_path.as_str()) {
-        Ok(path) => path,
-        Err(_) => {
-            log::error!(
-                "skin {skin_id}: TXD path contains a NUL byte: {:?}",
-                definition.txd_path
-            );
-            return Err(SkinLoadFailure {
-                recyclable_model_id: recycled_model_id,
-            });
-        }
-    };
-
-    let txd_slot: i32 = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_TXD_SLOT, txd_name.as_ptr()) };
-    if txd_slot < 0 {
-        log::error!("skin {skin_id}: could not allocate a TXD slot");
-        return Err(SkinLoadFailure {
-            recyclable_model_id: recycled_model_id,
-        });
-    }
-
-    let loaded: u8 = unsafe { call_cdecl_2(ADDR_CTXDSTORE_LOAD_TXD, txd_slot, txd_path.as_ptr()) };
-    if loaded == 0 {
-        log::error!(
-            "skin {skin_id}: could not load TXD from {} into slot {txd_slot}",
-            definition.txd_path
-        );
-        unsafe { remove_txd_slot(txd_slot, false) };
-        return Err(SkinLoadFailure {
-            recyclable_model_id: recycled_model_id,
-        });
-    }
-    let _: *mut c_void = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_REF, txd_slot) };
-
-    let model_info: *mut c_void = match recycled_model_id {
-        Some(_) => unsafe { get_model_info(model_id) },
-        None => unsafe { call_cdecl_1(ADDR_CMODELINFO_ADD_PED_MODEL, model_id) },
-    };
-    if model_info.is_null() {
-        log::error!("skin {skin_id}: could not prepare private model {model_id}");
-        unsafe { remove_txd_slot(txd_slot, true) };
-        return Err(SkinLoadFailure {
-            recyclable_model_id: recycled_model_id,
-        });
-    }
-
-    unsafe { clone_ped_model_metadata(model_info, donor_model_info, txd_slot) };
-
-    let clump = match unsafe { load_dff_clump(txd_slot, &definition.dff_path) } {
-        Some(clump) => clump,
-        None => {
-            let _ = unsafe { delete_model_rw_object(model_info) };
-            unsafe { remove_txd_slot(txd_slot, true) };
-            unsafe {
-                *((model_info as usize + MODEL_INFO_TXD_INDEX) as *mut i16) = -1;
-            }
-            return Err(SkinLoadFailure {
-                recyclable_model_id: Some(model_id),
-            });
-        }
-    };
-    // This does ped-specific clump setup; never write m_pRwClump directly.
-    unsafe { set_ped_model_clump(model_info, clump) };
-
-    log::info!(
-        "loaded skin {skin_id}: private model={model_id}, donor={}, txd_slot={txd_slot}, txd={}, dff={}",
-        definition.donor_model_id,
-        definition.txd_path,
-        definition.dff_path
-    );
-    Ok(SkinResources { model_id, txd_slot })
-}
-
-pub fn release_skin_resources(_frame: &GameFrame, skin_id: &str, resources: SkinResources) -> bool {
-    let model_info = unsafe { get_model_info(resources.model_id) };
-    if model_info.is_null() {
-        log::error!(
-            "skin {skin_id}: private model {} disappeared before cleanup",
-            resources.model_id
-        );
-        return false;
-    }
-    if !unsafe { delete_model_rw_object(model_info) } {
-        log::error!(
-            "skin {skin_id}: could not destroy RenderWare clump for private model {}",
-            resources.model_id
-        );
-        return false;
-    }
-
-    unsafe { remove_txd_slot(resources.txd_slot, true) };
-    // Keep the CPedModelInfo allocation valid but inert. Its ID can now be
-    // reused by this loader without allocating another entry from GTA's fixed
-    // ped-model-info array.
-    unsafe {
-        *((model_info as usize + MODEL_INFO_TXD_INDEX) as *mut i16) = -1;
-    }
-    log::info!(
-        "cleaned retired skin {skin_id}: private model={}, txd_slot={}",
-        resources.model_id,
-        resources.txd_slot
-    );
-    true
+    skin_source::release(frame, skin_id, resources)
 }
 
 unsafe fn call_cdecl_0<R>(address: usize) -> R {
@@ -896,24 +696,24 @@ unsafe fn destroy_clump(clump: *mut c_void) -> bool {
     destroyed != 0
 }
 
-unsafe fn prepare_instance_source(
+unsafe fn prepare_skin_source(
     clump: *mut c_void,
     model_info: *mut c_void,
 ) -> Result<(), &'static str> {
     let hierarchy = unsafe { validated_ped_hierarchy(clump) }?;
-    unsafe { prepare_instance_geometry(clump) }?;
-    unsafe { setup_instance_atomics(clump, hierarchy, model_info, true) }?;
+    unsafe { prepare_skin_geometry(clump) }?;
+    unsafe { setup_skin_atomics(clump, hierarchy, model_info, true) }?;
     Ok(())
 }
 
-unsafe fn prepare_instance_clone(
+unsafe fn prepare_skin_clone(
     clump: *mut c_void,
     model_info: *mut c_void,
     ped: &Ped,
-) -> Result<PreparedInstanceClump, &'static str> {
+) -> Result<PreparedSkinClump, &'static str> {
     let hierarchy = unsafe { validated_ped_hierarchy(clump) }?;
     let hierarchy_node_count = unsafe { hierarchy_node_count(hierarchy) }?;
-    unsafe { setup_instance_atomics(clump, hierarchy, model_info, false) }?;
+    unsafe { setup_skin_atomics(clump, hierarchy, model_info, false) }?;
 
     let animation: *mut c_void =
         unsafe { call_cdecl_1(ADDR_RPANIMBLEND_CREATE_ANIMATION_FOR_HIERARCHY, hierarchy) };
@@ -967,7 +767,7 @@ unsafe fn prepare_instance_clone(
             (ped.address as usize + PED_ANIM_MOVING_SHIFT_LOCAL) as *mut c_void;
     }
 
-    Ok(PreparedInstanceClump {
+    Ok(PreparedSkinClump {
         address: clump,
         bone_frames,
         frame_count,
@@ -995,8 +795,8 @@ unsafe fn validated_ped_hierarchy(clump: *mut c_void) -> Result<*mut c_void, &'s
 
 /// Mirrors the skinned-geometry preparation performed by
 /// `CClumpModelInfo::SetClump` without giving the donor model-info ownership of
-/// this source. `RpClumpClone` shares the prepared geometry with its instances.
-unsafe fn prepare_instance_geometry(clump: *mut c_void) -> Result<(), &'static str> {
+/// this source. `RpClumpClone` shares the prepared geometry with its clones.
+unsafe fn prepare_skin_geometry(clump: *mut c_void) -> Result<(), &'static str> {
     let atomic: *mut c_void = unsafe { call_cdecl_1(ADDR_GET_FIRST_ATOMIC, clump) };
     if atomic.is_null() {
         return Err("DFF clump has no atomic");
@@ -1082,7 +882,7 @@ unsafe fn prepare_instance_geometry(clump: *mut c_void) -> Result<(), &'static s
     unsafe { *(radius_address as *mut f32) = expanded_radius };
 
     log::debug!(
-        "local instance source: normalized {vertex_count} skin weights (sums {minimum_sum:.4}..{maximum_sum:.4}) and expanded its render bounds"
+        "skin source: normalized {vertex_count} skin weights (sums {minimum_sum:.4}..{maximum_sum:.4}) and expanded its render bounds"
     );
     Ok(())
 }
@@ -1099,7 +899,7 @@ unsafe fn hierarchy_node_count(hierarchy: *mut c_void) -> Result<i32, &'static s
     Ok(node_count)
 }
 
-unsafe fn setup_instance_atomics(
+unsafe fn setup_skin_atomics(
     clump: *mut c_void,
     hierarchy: *mut c_void,
     model_info: *mut c_void,
@@ -1109,7 +909,7 @@ unsafe fn setup_instance_atomics(
         set_clump_model_info(clump, model_info);
         if configure_source_rendering {
             // CClumpModelInfo::SetClump performs these once on the streamed
-            // model source. RpClumpClone carries both into each instance.
+            // model source. RpClumpClone carries both into each clone.
             for_all_atomics(
                 clump,
                 ADDR_CCLUMPMODELINFO_ATOMIC_SETUP_LIGHTING_CB,
@@ -1227,7 +1027,7 @@ unsafe fn destroy_animation(animation: *mut c_void) {
 /// frame API. A raw matrix copy leaves the destination hierarchy clean, so
 /// `RwFrameUpdateObjects` may retain the source DFF's stale LTM and render the
 /// replacement away from the ped.
-unsafe fn position_instance_clump(
+unsafe fn position_skin_clone(
     source: *mut c_void,
     destination: *mut c_void,
 ) -> Result<(), &'static str> {
@@ -1238,7 +1038,7 @@ unsafe fn position_instance_clump(
     let Some(destination_frame): Option<*mut c_void> =
         memory::read(destination as usize + RW_OBJECT_PARENT)
     else {
-        return Err("could not read the instance clump's root frame");
+        return Err("could not read the skin-source clone's root frame");
     };
     if source_frame.is_null() || destination_frame.is_null() {
         return Err("a replacement clump has no root frame");
@@ -1257,7 +1057,7 @@ unsafe fn position_instance_clump(
         )
     };
     if transformed != destination_frame {
-        return Err("RwFrameTransform could not position the instance clump");
+        return Err("RwFrameTransform could not position the skin-source clone");
     }
     Ok(())
 }
@@ -1298,7 +1098,7 @@ unsafe fn abort_secondary_ik(ped: &Ped) -> Result<(), &'static str> {
     if aborted == 0 {
         return Err("GTA refused to abort the secondary IK task");
     }
-    log::debug!("local instance swap: aborted secondary IK before replacing ped bones");
+    log::debug!("skin-source swap: aborted secondary IK before replacing ped bones");
     Ok(())
 }
 
@@ -1406,46 +1206,6 @@ unsafe fn delete_entity_rw_object(ped: &Ped) -> Result<(), &'static str> {
     }
 }
 
-unsafe fn set_ped_model_clump(model_info: *mut c_void, clump: *mut c_void) {
-    type SetClump = unsafe extern "thiscall" fn(*mut c_void, *mut c_void);
-    let function: SetClump = unsafe { std::mem::transmute(ADDR_CPEDMODELINFO_SETCLUMP) };
-    unsafe { function(model_info, clump) };
-}
-
-/// Calls CBaseModelInfo's virtual DeleteRwObject implementation. For a ped
-/// model this is CPedModelInfo::DeleteRwObject, which destroys the source
-/// RenderWare clump. CStreaming::RemoveModel uses this same vtable slot.
-unsafe fn delete_model_rw_object(model_info: *mut c_void) -> bool {
-    if model_info.is_null() {
-        return false;
-    }
-
-    let rw_object_address = model_info as usize + MODEL_INFO_RW_OBJECT;
-    let Some(rw_object): Option<*mut c_void> = memory::read(rw_object_address) else {
-        return false;
-    };
-    if rw_object.is_null() {
-        return true;
-    }
-
-    let Some(vtable): Option<usize> = memory::read(model_info as usize) else {
-        return false;
-    };
-    let Some(function_address): Option<usize> =
-        memory::read(vtable + VTABLE_DELETE_RW_OBJECT_OFFSET)
-    else {
-        return false;
-    };
-    if function_address == 0 {
-        return false;
-    }
-
-    type DeleteRwObject = unsafe extern "thiscall" fn(*mut c_void);
-    let function: DeleteRwObject = unsafe { std::mem::transmute(function_address) };
-    unsafe { function(model_info) };
-    true
-}
-
 unsafe fn remove_txd_slot(txd_slot: i32, has_reference: bool) {
     if has_reference {
         // CTxdStore::RemoveRef destroys the dictionary when this was the last
@@ -1515,38 +1275,6 @@ unsafe fn load_dff_clump(txd_slot: i32, dff_path: &str) -> Option<*mut c_void> {
     (!clump.is_null()).then_some(clump)
 }
 
-/// Copies the safe, initialized portion of a vanilla CPedModelInfo into a new
-/// slot. The new entry keeps its constructor-provided vtable/key/refcount, has
-/// no borrowed RenderWare clump, and never claims ownership of the donor's
-/// shared collision model.
-unsafe fn clone_ped_model_metadata(destination: *mut c_void, donor: *mut c_void, txd_slot: i32) {
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            (donor as *const u8).add(MODEL_INFO_COPY_START),
-            (destination as *mut u8).add(MODEL_INFO_COPY_START),
-            PED_MODEL_INFO_SIZE - MODEL_INFO_COPY_START,
-        );
-
-        // The source model's clump belongs to the donor. SetClump below owns
-        // the newly loaded custom clump instead.
-        *((destination as usize + MODEL_INFO_RW_OBJECT) as *mut *mut c_void) = std::ptr::null_mut();
-
-        // The copied collision model is shared with the donor; a private model
-        // must not free it during GTA shutdown.
-        let flags = (destination as usize + MODEL_INFO_FLAGS) as *mut u16;
-        *flags &= !MODEL_FLAG_OWNS_COLLISION;
-
-        // CPedModelInfo owns a separate, generated hit-collision model. Do
-        // not inherit the donor's pointer: SetClump creates one for this skin
-        // and DeleteRwObject later destroys only that private allocation.
-        *((destination as usize + PED_MODEL_INFO_HIT_COL_MODEL) as *mut *mut c_void) =
-            std::ptr::null_mut();
-
-        // CBaseModelInfo::m_nTxdIndex is a signed short at +0x0A.
-        *((destination as usize + MODEL_INFO_TXD_INDEX) as *mut i16) = txd_slot as i16;
-    }
-}
-
 unsafe fn get_model_info(model_id: i32) -> *mut c_void {
     if !is_valid_model_id(model_id) {
         return std::ptr::null_mut();
@@ -1564,8 +1292,8 @@ unsafe fn get_model_info(model_id: i32) -> *mut c_void {
 /// configuration parser cannot make this check: GTA's model-info table is
 /// game-owned and must only be inspected from the game thread.
 unsafe fn verified_ped_model_info(model_id: i32) -> Result<*mut c_void, &'static str> {
-    if !is_valid_donor_model_id(model_id) {
-        return Err("is outside the normal model range or reserved for Wardrobe's private models");
+    if !is_valid_model_id(model_id) {
+        return Err("is outside the valid GTA model range");
     }
 
     let donor = unsafe { get_model_info(model_id) };
@@ -1591,29 +1319,6 @@ unsafe fn verified_ped_model_info(model_id: i32) -> Result<*mut c_void, &'static
     Ok(donor)
 }
 
-unsafe fn find_free_model_id() -> Option<i32> {
-    for model_id in PRIVATE_MODEL_ID_START..PRIVATE_MODEL_ID_END {
-        let Some(model_info_address) = ADDR_MS_MODEL_INFO_PTRS
-            .checked_add(model_id as usize * std::mem::size_of::<*mut c_void>())
-        else {
-            log::error!("private model address calculation overflowed");
-            return None;
-        };
-        let Some(model_info): Option<*mut c_void> = memory::read(model_info_address) else {
-            log::error!("could not read GTA's model-info table while allocating a private model");
-            return None;
-        };
-        if model_info.is_null() {
-            return Some(model_id);
-        }
-    }
-
-    log::error!(
-        "no private model ID available in {PRIVATE_MODEL_ID_START}..{PRIVATE_MODEL_ID_END}"
-    );
-    None
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -1636,30 +1341,28 @@ mod tests {
         ADDR_CCLUMPMODELINFO_ATOMIC_SETUP_LIGHTING_CB, ADDR_CCLUMPMODELINFO_SET_ATOMIC_RENDERER_CB,
         ADDR_CCLUMPMODELINFO_SET_HIERARCHY_FOR_SKIN_ATOMIC, ADDR_CENTITY_CREATE_RW_OBJECT,
         ADDR_CENTITY_UPDATE_RP_HANIM, ADDR_CENTITY_UPDATE_RW_FRAME, ADDR_CGAME_PROCESS,
-        ADDR_CMODELINFO_ADD_PED_MODEL, ADDR_CPED_DELETE_RW_OBJECT, ADDR_CPED_SET_MODEL_INDEX,
-        ADDR_CPEDMODELINFO_SETCLUMP, ADDR_CTASKSIMPLEIKMANAGER_MAKE_ABORTABLE,
-        ADDR_CTXDSTORE_ADD_REF, ADDR_CTXDSTORE_ADD_TXD_SLOT, ADDR_CTXDSTORE_LOAD_TXD,
-        ADDR_CTXDSTORE_POPCURRENTTXD, ADDR_CTXDSTORE_PUSHCURRENTTXD, ADDR_CTXDSTORE_REMOVE_REF,
-        ADDR_CTXDSTORE_REMOVE_TXD_SLOT, ADDR_CTXDSTORE_SETCURRENTTXD,
-        ADDR_CVISIBILITYPLUGINS_RENDER_PED_CB, ADDR_CVISIBILITYPLUGINS_SET_CLUMP_MODEL_INFO,
-        ADDR_GET_ANIM_HIERARCHY_FROM_CLUMP, ADDR_GET_ANIM_HIERARCHY_FROM_SKIN_CLUMP,
-        ADDR_GET_FIRST_ATOMIC, ADDR_IS_CLUMP_SKINNED, ADDR_RPANIMBLEND_CLUMP_EXTRACT_ASSOCIATIONS,
-        ADDR_RPANIMBLEND_CLUMP_FILL_FRAME_ARRAY, ADDR_RPANIMBLEND_CLUMP_GIVE_ASSOCIATIONS,
-        ADDR_RPANIMBLEND_CLUMP_INIT, ADDR_RPANIMBLEND_CREATE_ANIMATION_FOR_HIERARCHY,
-        ADDR_RPCLUMP_CLONE, ADDR_RPCLUMP_DESTROY, ADDR_RPCLUMP_FOR_ALL_ATOMICS,
-        ADDR_RPCLUMPSTREAMREAD, ADDR_RPHANIM_ID_GET_INDEX, ADDR_RPSKIN_GEOMETRY_GET_SKIN,
-        ADDR_RPSKIN_GET_VERTEX_BONE_WEIGHTS, ADDR_RTANIM_ANIMATION_DESTROY,
-        ADDR_RTANIM_INTERPOLATOR_SET_CURRENT_ANIM, ADDR_RWFRAME_TRANSFORM, ADDR_RWSTREAMCLOSE,
-        ADDR_RWSTREAMFINDCHUNK, ADDR_RWSTREAMOPEN, EXECUTABLE_SIGNATURES, hex,
+        ADDR_CPED_DELETE_RW_OBJECT, ADDR_CPED_SET_MODEL_INDEX,
+        ADDR_CTASKSIMPLEIKMANAGER_MAKE_ABORTABLE, ADDR_CTXDSTORE_ADD_REF,
+        ADDR_CTXDSTORE_ADD_TXD_SLOT, ADDR_CTXDSTORE_LOAD_TXD, ADDR_CTXDSTORE_POPCURRENTTXD,
+        ADDR_CTXDSTORE_PUSHCURRENTTXD, ADDR_CTXDSTORE_REMOVE_REF, ADDR_CTXDSTORE_REMOVE_TXD_SLOT,
+        ADDR_CTXDSTORE_SETCURRENTTXD, ADDR_CVISIBILITYPLUGINS_RENDER_PED_CB,
+        ADDR_CVISIBILITYPLUGINS_SET_CLUMP_MODEL_INFO, ADDR_GET_ANIM_HIERARCHY_FROM_CLUMP,
+        ADDR_GET_ANIM_HIERARCHY_FROM_SKIN_CLUMP, ADDR_GET_FIRST_ATOMIC, ADDR_IS_CLUMP_SKINNED,
+        ADDR_RPANIMBLEND_CLUMP_EXTRACT_ASSOCIATIONS, ADDR_RPANIMBLEND_CLUMP_FILL_FRAME_ARRAY,
+        ADDR_RPANIMBLEND_CLUMP_GIVE_ASSOCIATIONS, ADDR_RPANIMBLEND_CLUMP_INIT,
+        ADDR_RPANIMBLEND_CREATE_ANIMATION_FOR_HIERARCHY, ADDR_RPCLUMP_CLONE, ADDR_RPCLUMP_DESTROY,
+        ADDR_RPCLUMP_FOR_ALL_ATOMICS, ADDR_RPCLUMPSTREAMREAD, ADDR_RPHANIM_ID_GET_INDEX,
+        ADDR_RPSKIN_GEOMETRY_GET_SKIN, ADDR_RPSKIN_GET_VERTEX_BONE_WEIGHTS,
+        ADDR_RTANIM_ANIMATION_DESTROY, ADDR_RTANIM_INTERPOLATOR_SET_CURRENT_ANIM,
+        ADDR_RWFRAME_TRANSFORM, ADDR_RWSTREAMCLOSE, ADDR_RWSTREAMFINDCHUNK, ADDR_RWSTREAMOPEN,
+        EXECUTABLE_SIGNATURES, hex,
     };
 
     #[test]
     fn validates_every_fixed_gta_code_target() {
         let targets = [
             ADDR_CGAME_PROCESS,
-            ADDR_CMODELINFO_ADD_PED_MODEL,
             ADDR_CPED_SET_MODEL_INDEX,
-            ADDR_CPEDMODELINFO_SETCLUMP,
             ADDR_CPED_DELETE_RW_OBJECT,
             ADDR_CENTITY_CREATE_RW_OBJECT,
             ADDR_CTASKSIMPLEIKMANAGER_MAKE_ABORTABLE,

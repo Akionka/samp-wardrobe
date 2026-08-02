@@ -187,12 +187,11 @@ fn parse(text: &str) -> Result<SkinConfig, String> {
         {
             return Err(format!("skin {skin_id} has an empty asset path"));
         }
-        if !model_ids::is_valid_donor_model_id(definition.donor_model_id) {
+        if !model_ids::is_valid_model_id(definition.donor_model_id) {
             return Err(format!(
-                "skin {skin_id} has invalid donor_model_id {}; donor IDs must be normal GTA model IDs outside Wardrobe's private range {}..{}",
+                "skin {skin_id} has invalid donor_model_id {}; donor IDs must be valid GTA model IDs from 0 to {}",
                 definition.donor_model_id,
-                model_ids::PRIVATE_MODEL_ID_START,
-                model_ids::PRIVATE_MODEL_ID_END,
+                model_ids::MODEL_ID_LIMIT - 1,
             ));
         }
     }
@@ -265,8 +264,8 @@ mod tests {
     }
 
     #[test]
-    fn donor_model_id_cannot_use_the_private_model_range() {
-        let error = parse(
+    fn donor_model_id_accepts_every_valid_gta_model_id() {
+        let config = parse(
             r#"{
                 "skins": {
                     "unsafe": {
@@ -278,9 +277,9 @@ mod tests {
                 "rules": []
             }"#,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.contains("private range 18000..20000"));
+        assert_eq!(config.skins["unsafe"].donor_model_id, 18_000);
     }
 
     #[test]

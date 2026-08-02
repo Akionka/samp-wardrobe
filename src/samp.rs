@@ -33,7 +33,6 @@ pub type PlayerId = u16;
 
 pub struct StreamedPed {
     pub player_id: PlayerId,
-    pub is_local: bool,
     /// `None` when the player name is empty, malformed, or unreadable. The
     /// ped remains usable for server-model-only rules.
     pub name: Option<String>,
@@ -148,7 +147,6 @@ impl Samp {
         let name = read_msvc_string(player_pool, self.layout.player_pool_local_name_offset);
         Some(Some(StreamedPed {
             player_id,
-            is_local: true,
             name,
             address,
         }))
@@ -178,7 +176,6 @@ impl Samp {
             let name = self.remote_player_name(remote);
             matches.push(StreamedPed {
                 player_id: player_id as PlayerId,
-                is_local: false,
                 name,
                 address,
             });

@@ -1,30 +1,26 @@
-//! Local-player RenderWare instance-clump lifecycle.
-//!
-//! This module owns only the local path. The private GTA model-slot path for
-//! remote peds remains in the parent bridge so the two resource lifecycles do
-//! not become coupled accidentally.
+//! Shared RenderWare skin-source and per-ped clone lifecycle.
 
 use super::*;
 use std::ffi::{CString, c_void};
 use std::path::Path;
 
-/// Loads a TXD and raw source clump for the local-player instance path. Unlike
-/// `load_skin`, this never allocates or mutates a GTA model-info slot.
+/// Loads a TXD and raw source clump without allocating or mutating a GTA
+/// model-info slot.
 pub(super) fn load(
     _frame: &GameFrame,
     skin_id: &str,
     definition: &SkinDefinition,
-) -> Option<InstanceSkinResources> {
+) -> Option<SkinSourceResources> {
     if !Path::new(&definition.txd_path).is_file() {
         log::error!(
-            "instance skin {skin_id}: TXD file does not exist or is not a file: {}",
+            "skin source {skin_id}: TXD file does not exist or is not a file: {}",
             definition.txd_path
         );
         return None;
     }
     if !Path::new(&definition.dff_path).is_file() {
         log::error!(
-            "instance skin {skin_id}: DFF file does not exist or is not a file: {}",
+            "skin source {skin_id}: DFF file does not exist or is not a file: {}",
             definition.dff_path
         );
         return None;
@@ -36,7 +32,7 @@ pub(super) fn load(
         },
         Err(reason) => {
             log::error!(
-                "instance skin {skin_id}: donor model {} {reason}",
+                "skin source {skin_id}: donor model {} {reason}",
                 definition.donor_model_id
             );
             return None;
@@ -47,7 +43,7 @@ pub(super) fn load(
         Ok(path) => path,
         Err(_) => {
             log::error!(
-                "instance skin {skin_id}: TXD path contains a NUL byte: {:?}",
+                "skin source {skin_id}: TXD path contains a NUL byte: {:?}",
                 definition.txd_path
             );
             return None;
@@ -57,7 +53,7 @@ pub(super) fn load(
         .expect("hexadecimal TXD name cannot contain NUL");
 
     log::info!(
-        "loading local instance skin {skin_id}: donor={}, txd={}, dff={}",
+        "loading skin source {skin_id}: donor={}, txd={}, dff={}",
         definition.donor_model_id,
         definition.txd_path,
         definition.dff_path
@@ -65,14 +61,14 @@ pub(super) fn load(
 
     let txd_slot: i32 = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_TXD_SLOT, txd_name.as_ptr()) };
     if txd_slot < 0 {
-        log::error!("instance skin {skin_id}: could not allocate a TXD slot");
+        log::error!("skin source {skin_id}: could not allocate a TXD slot");
         return None;
     }
 
     let loaded: u8 = unsafe { call_cdecl_2(ADDR_CTXDSTORE_LOAD_TXD, txd_slot, txd_path.as_ptr()) };
     if loaded == 0 {
         log::error!(
-            "instance skin {skin_id}: could not load TXD from {} into slot {txd_slot}",
+            "skin source {skin_id}: could not load TXD from {} into slot {txd_slot}",
             definition.txd_path
         );
         unsafe { remove_txd_slot(txd_slot, false) };
@@ -89,26 +85,26 @@ pub(super) fn load(
     };
 
     if let Err(reason) =
-        unsafe { prepare_instance_source(source_clump, donor_model_info.address as *mut c_void) }
+        unsafe { prepare_skin_source(source_clump, donor_model_info.address as *mut c_void) }
     {
-        log::error!("instance skin {skin_id}: incompatible DFF source: {reason}");
+        log::error!("skin source {skin_id}: incompatible DFF source: {reason}");
         if unsafe { destroy_clump(source_clump) } {
             unsafe { remove_txd_slot(txd_slot, true) };
         } else {
             log::error!(
-                "instance skin {skin_id}: could not destroy rejected source clump; retaining TXD slot {txd_slot} to avoid dangling textures"
+                "skin source {skin_id}: could not destroy rejected source clump; retaining TXD slot {txd_slot} to avoid dangling textures"
             );
         }
         return None;
     }
     log::info!(
-        "loaded local instance skin {skin_id}: donor={}, txd_slot={}, txd={}, dff={} (no private model allocated)",
+        "loaded skin source {skin_id}: donor={}, txd_slot={}, txd={}, dff={}",
         definition.donor_model_id,
         txd_slot,
         definition.txd_path,
         definition.dff_path
     );
-    Some(InstanceSkinResources {
+    Some(SkinSourceResources {
         txd_slot,
         source_clump: SourceClump {
             address: source_clump as usize,
@@ -117,17 +113,17 @@ pub(super) fn load(
     })
 }
 
-/// Clones and installs a local-player render object while preserving the ped's
-/// model index. Failures either leave the original clump untouched or recover
-/// GTA's ordinary clump for `server_model_id` after a swap has started.
+/// Clones and installs a ped render object while preserving its model index.
+/// Failures either leave the original clump untouched or recover GTA's normal
+/// clump for `server_model_id` after a swap has started.
 pub(super) fn apply(
     frame: &GameFrame,
     ped: &Ped,
     server_model_id: i16,
-    resources: &InstanceSkinResources,
+    resources: &SkinSourceResources,
 ) -> Result<PedRenderObject, &'static str> {
     if ped_model_id(ped) != Some(server_model_id) {
-        return Err("ped model changed before the instance swap");
+        return Err("ped model changed before the skin-source swap");
     }
     let old_clump = ped_render_object(ped)
         .filter(|object| !object.is_null())
@@ -137,14 +133,14 @@ pub(super) fn apply(
         .map_err(|_| "ped's ordinary clump has invalid AnimBlend frame data")?;
 
     let source_clump = resources.source_clump.address as *mut c_void;
-    log::debug!("local instance swap: cloning the cached custom ped source");
+    log::debug!("skin-source swap: cloning the cached custom ped source");
     let clone = unsafe { clone_clump(source_clump) };
     if clone.is_null() {
         return Err("RpClumpClone returned null");
     }
-    log::debug!("local instance swap: cloned and preparing the custom ped clump");
+    log::debug!("skin-source swap: cloned and preparing the custom ped clump");
     let prepared = match unsafe {
-        prepare_instance_clone(
+        prepare_skin_clone(
             clone,
             resources.donor_model_info.address as *mut c_void,
             ped,
@@ -153,7 +149,7 @@ pub(super) fn apply(
         Ok(prepared) => prepared,
         Err(reason) => {
             if !unsafe { destroy_clump(clone) } {
-                log::error!("could not destroy an unattached instance-clump clone after: {reason}");
+                log::error!("could not destroy an unattached skin-source clone after: {reason}");
             }
             return Err(reason);
         }
@@ -163,16 +159,16 @@ pub(super) fn apply(
         None => {
             if !unsafe { destroy_clump(prepared.address) } {
                 log::error!(
-                    "could not destroy an unattached instance-clump clone after its geometry identity could not be read"
+                    "could not destroy an unattached skin-source clone after its geometry identity could not be read"
                 );
             }
-            return Err("could not identify the prepared instance clump geometry");
+            return Err("could not identify the prepared skin-source clone geometry");
         }
     };
     if prepared.frame_count != old_frame_count {
         if !unsafe { destroy_clump(prepared.address) } {
             log::error!(
-                "could not destroy an unattached instance-clump clone after an AnimBlend frame-count mismatch"
+                "could not destroy an unattached skin-source clone after an AnimBlend frame-count mismatch"
             );
         }
         return Err("custom DFF bone count differs from the live ped skeleton");
@@ -184,7 +180,7 @@ pub(super) fn apply(
     if associations.is_empty() {
         if !unsafe { destroy_clump(prepared.address) } {
             log::error!(
-                "could not destroy an unattached instance-clump clone after finding no live animation associations"
+                "could not destroy an unattached skin-source clone after finding no live animation associations"
             );
         }
         return Err("ped's ordinary clump has no live animation associations");
@@ -193,22 +189,20 @@ pub(super) fn apply(
     if let Err(reason) = unsafe { abort_secondary_ik(ped) } {
         unsafe { return_associations(prepared.address, old_clump) };
         if !unsafe { destroy_clump(prepared.address) } {
-            log::error!("could not destroy an unattached instance-clump clone after: {reason}");
+            log::error!("could not destroy an unattached skin-source clone after: {reason}");
         }
         return Err(reason);
     }
 
-    log::debug!("local instance swap: prepared clone; deleting the ordinary ped render object");
+    log::debug!("skin-source swap: prepared clone; deleting the ordinary ped render object");
     if let Err(reason) = unsafe { delete_entity_rw_object(ped) } {
         unsafe { return_associations(prepared.address, old_clump) };
         if !unsafe { destroy_clump(prepared.address) } {
-            log::error!("could not destroy an unattached instance-clump clone after: {reason}");
+            log::error!("could not destroy an unattached skin-source clone after: {reason}");
         }
         return Err(reason);
     }
-    log::debug!(
-        "local instance swap: ordinary render object deleted; restoring entity bookkeeping"
-    );
+    log::debug!("skin-source swap: ordinary render object deleted; restoring entity bookkeeping");
 
     // DeleteRwObject correctly releases the server model reference, streaming
     // link, and effects. Recreate them through CEntity, then discard only its
@@ -226,7 +220,7 @@ pub(super) fn apply(
         };
         return Err(reason);
     }
-    log::debug!("local instance swap: entity bookkeeping restored; replacing the temporary clump");
+    log::debug!("skin-source swap: entity bookkeeping restored; replacing the temporary clump");
     let temporary_clump = match ped_render_object(ped)
         .filter(|object| !object.is_null())
         .map(|object| object.address as *mut c_void)
@@ -246,7 +240,7 @@ pub(super) fn apply(
             return Err(reason);
         }
     };
-    if let Err(reason) = unsafe { position_instance_clump(temporary_clump, prepared.address) } {
+    if let Err(reason) = unsafe { position_skin_clone(temporary_clump, prepared.address) } {
         unsafe {
             recover_server_clump_after_failed_swap(
                 frame,
@@ -288,19 +282,19 @@ pub(super) fn apply(
     }
     if ped_model_id(ped) != Some(server_model_id) {
         let _ = restore(frame, ped, server_model_id, installed);
-        return Err("instance replacement changed the ped model index");
+        return Err("skin-source replacement changed the ped model index");
     }
 
     unsafe {
         update_rw_frame(ped);
         update_rp_hanim(ped);
     }
-    log::debug!("local instance swap: installed and updated the custom ped clump");
+    log::debug!("skin-source swap: installed and updated the custom ped clump");
 
     Ok(installed)
 }
 
-/// Removes a matching local instance clump through the ped's virtual entity
+/// Removes a matching custom clone through the ped's virtual entity
 /// lifecycle and lets CPed rebuild the remembered server model. Animation
 /// associations are transferred exactly as GTA does for a clothing rebuild.
 pub(super) fn restore(
@@ -311,7 +305,7 @@ pub(super) fn restore(
 ) -> Result<(), &'static str> {
     let current = ped_render_object(ped).ok_or("could not read the ped render object")?;
     if current != installed {
-        return Err("the installed instance clump was already replaced");
+        return Err("the installed skin-source clone was already replaced");
     }
     let clump = current.address as *mut c_void;
     let associations = match unsafe { anim_blend_data(clump) } {
@@ -346,20 +340,16 @@ pub(super) fn restore(
     Ok(())
 }
 
-pub(super) fn release(
-    _frame: &GameFrame,
-    skin_id: &str,
-    resources: &InstanceSkinResources,
-) -> bool {
+pub(super) fn release(_frame: &GameFrame, skin_id: &str, resources: &SkinSourceResources) -> bool {
     let source_clump = resources.source_clump.address as *mut c_void;
     if !unsafe { destroy_clump(source_clump) } {
-        log::error!("instance skin {skin_id}: could not destroy retired source clump");
+        log::error!("skin source {skin_id}: could not destroy retired source clump");
         return false;
     }
 
     unsafe { remove_txd_slot(resources.txd_slot, true) };
     log::info!(
-        "cleaned retired local instance skin {skin_id}: txd_slot={}",
+        "cleaned retired skin source {skin_id}: txd_slot={}",
         resources.txd_slot
     );
     true
