@@ -1,6 +1,6 @@
 use crate::config::{SkinConfig, SkinDefinition, SkinSourceRevision, skin_source_revision};
 use crate::game_frame::GameFrame;
-use crate::gta::{self, SkinResources};
+use crate::gta::{self, InstanceSkinResources, SkinResources};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -20,6 +20,24 @@ struct RetiredSkin {
     retired_at: Instant,
 }
 
+#[derive(Debug)]
+struct LoadedInstanceSkin {
+    resources: InstanceSkinResources,
+    source: SkinSourceRevision,
+}
+
+#[derive(Debug)]
+struct RetiredInstanceSkin {
+    skin_id: String,
+    resources: InstanceSkinResources,
+}
+
+pub enum InstanceSkinLookup {
+    Ready,
+    ResetRequired,
+    Unavailable,
+}
+
 #[derive(Default)]
 pub struct SkinManager {
     loaded_models: HashMap<String, LoadedSkin>,
@@ -31,6 +49,10 @@ pub struct SkinManager {
     recyclable_model_ids: HashSet<i32>,
     failed_profiles: HashMap<String, SkinSourceRevision>,
     last_asset_check: HashMap<String, Instant>,
+    loaded_instances: HashMap<String, LoadedInstanceSkin>,
+    retired_instances: Vec<RetiredInstanceSkin>,
+    failed_instance_profiles: HashMap<String, SkinSourceRevision>,
+    last_instance_asset_check: HashMap<String, Instant>,
 }
 
 impl SkinManager {
@@ -63,9 +85,20 @@ impl SkinManager {
             self.retire(skin_id, loaded);
         }
 
+        let unneeded_instances = self
+            .loaded_instances
+            .keys()
+            .filter(|skin_id| !referenced_skins.contains(*skin_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for skin_id in unneeded_instances {
+            self.retire_instance(&skin_id);
+        }
+
         // A corrected asset path or a newly added profile should be allowed to
         // load on the next matching poll.
         self.failed_profiles.clear();
+        self.failed_instance_profiles.clear();
     }
 
     pub fn is_private_model(&self, model_id: i16) -> bool {
@@ -156,6 +189,98 @@ impl SkinManager {
         }
     }
 
+    pub fn instance_for(
+        &mut self,
+        frame: &GameFrame,
+        skin_id: &str,
+        definition: &SkinDefinition,
+    ) -> InstanceSkinLookup {
+        if self
+            .retired_instances
+            .iter()
+            .any(|retired| retired.skin_id == skin_id)
+        {
+            return InstanceSkinLookup::Unavailable;
+        }
+
+        let now = Instant::now();
+        let checked_recently = self
+            .last_instance_asset_check
+            .get(skin_id)
+            .is_some_and(|last_check| now.duration_since(*last_check) < ASSET_RELOAD_INTERVAL);
+
+        if let Some(loaded) = self.loaded_instances.get(skin_id)
+            && loaded.source.definition == *definition
+            && checked_recently
+        {
+            return InstanceSkinLookup::Ready;
+        }
+        if checked_recently
+            && self
+                .failed_instance_profiles
+                .get(skin_id)
+                .is_some_and(|failed| failed.definition == *definition)
+        {
+            return InstanceSkinLookup::Unavailable;
+        }
+
+        let source = skin_source_revision(definition);
+        self.last_instance_asset_check
+            .insert(skin_id.to_owned(), now);
+        if let Some(loaded) = self.loaded_instances.get(skin_id)
+            && loaded.source == source
+        {
+            return InstanceSkinLookup::Ready;
+        }
+
+        if self.loaded_instances.contains_key(skin_id) {
+            self.retire_instance(skin_id);
+            self.failed_instance_profiles.remove(skin_id);
+            log::info!(
+                "local instance skin {skin_id} changed; queued its old source for cleanup before reload"
+            );
+            return InstanceSkinLookup::ResetRequired;
+        }
+        if self.failed_instance_profiles.get(skin_id) == Some(&source) {
+            return InstanceSkinLookup::Unavailable;
+        }
+
+        match gta::load_instance_skin(frame, skin_id, definition) {
+            Some(resources) => {
+                self.loaded_instances
+                    .insert(skin_id.to_owned(), LoadedInstanceSkin { resources, source });
+                self.failed_instance_profiles.remove(skin_id);
+                InstanceSkinLookup::Ready
+            }
+            None => {
+                self.failed_instance_profiles
+                    .insert(skin_id.to_owned(), source);
+                log::error!(
+                    "local instance skin {skin_id} is unavailable until its files or profile change"
+                );
+                InstanceSkinLookup::Unavailable
+            }
+        }
+    }
+
+    pub fn instance_resources(&self, skin_id: &str) -> Option<&InstanceSkinResources> {
+        self.loaded_instances
+            .get(skin_id)
+            .map(|loaded| &loaded.resources)
+    }
+
+    pub fn retain_instance_skins(&mut self, desired_skin_ids: &HashSet<String>) {
+        let unneeded = self
+            .loaded_instances
+            .keys()
+            .filter(|skin_id| !desired_skin_ids.contains(*skin_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for skin_id in unneeded {
+            self.retire_instance(&skin_id);
+        }
+    }
+
     pub fn cleanup_retired(&mut self, frame: &GameFrame, live_model_ids: Option<HashSet<i16>>) {
         if self.retired_skins.is_empty() {
             return;
@@ -194,6 +319,33 @@ impl SkinManager {
         }
     }
 
+    pub fn cleanup_retired_instances(
+        &mut self,
+        frame: &GameFrame,
+        live_skin_ids: Option<HashSet<String>>,
+    ) {
+        if self.retired_instances.is_empty() {
+            return;
+        }
+        let Some(live_skin_ids) = live_skin_ids else {
+            log::debug!("deferred local instance-skin cleanup because ped liveness was incomplete");
+            return;
+        };
+
+        let pending = std::mem::take(&mut self.retired_instances);
+        for retired in pending {
+            if live_skin_ids.contains(&retired.skin_id)
+                || !gta::release_instance_skin_resources(
+                    frame,
+                    &retired.skin_id,
+                    &retired.resources,
+                )
+            {
+                self.retired_instances.push(retired);
+            }
+        }
+    }
+
     fn take_recyclable_model_id(&mut self) -> Option<i32> {
         let model_id = self.recyclable_model_ids.iter().next().copied();
         if let Some(model_id) = model_id {
@@ -207,6 +359,16 @@ impl SkinManager {
             skin_id,
             resources: loaded.resources,
             retired_at: Instant::now(),
+        });
+    }
+
+    fn retire_instance(&mut self, skin_id: &str) {
+        let Some(loaded) = self.loaded_instances.remove(skin_id) else {
+            return;
+        };
+        self.retired_instances.push(RetiredInstanceSkin {
+            skin_id: skin_id.to_owned(),
+            resources: loaded.resources,
         });
     }
 }

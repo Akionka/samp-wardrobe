@@ -33,6 +33,38 @@ const ADDR_CTXDSTORE_SETCURRENTTXD: usize = 0x7319C0;
 
 const ADDR_CPED_SET_MODEL_INDEX: usize = 0x5E4880;
 const ADDR_CPEDMODELINFO_SETCLUMP: usize = 0x4C7340;
+const ADDR_CPED_DELETE_RW_OBJECT: usize = 0x5DEBF0;
+const ADDR_CENTITY_CREATE_RW_OBJECT: usize = 0x533D30;
+const ADDR_CTASKSIMPLEIKMANAGER_MAKE_ABORTABLE: usize = 0x6338A0;
+const ADDR_CENTITY_UPDATE_RW_FRAME: usize = 0x532B00;
+const ADDR_CENTITY_UPDATE_RP_HANIM: usize = 0x532B20;
+const ADDR_CCLUMPMODELINFO_SET_HIERARCHY_FOR_SKIN_ATOMIC: usize = 0x4C4EF0;
+const ADDR_CCLUMPMODELINFO_ATOMIC_SETUP_LIGHTING_CB: usize = 0x4C4F30;
+const ADDR_CCLUMPMODELINFO_SET_ATOMIC_RENDERER_CB: usize = 0x4C5280;
+const ADDR_CVISIBILITYPLUGINS_RENDER_PED_CB: usize = 0x7335B0;
+const ADDR_CVISIBILITYPLUGINS_SET_CLUMP_MODEL_INFO: usize = 0x733750;
+const ADDR_IS_CLUMP_SKINNED: usize = 0x4C4DC0;
+const ADDR_GET_ANIM_HIERARCHY_FROM_CLUMP: usize = 0x734B10;
+const ADDR_GET_ANIM_HIERARCHY_FROM_SKIN_CLUMP: usize = 0x734A40;
+const ADDR_RPANIMBLEND_CREATE_ANIMATION_FOR_HIERARCHY: usize = 0x4D60E0;
+const ADDR_RPANIMBLEND_CLUMP_INIT: usize = 0x4D6720;
+const ADDR_RPANIMBLEND_CLUMP_FILL_FRAME_ARRAY: usize = 0x4D64A0;
+const ADDR_RPANIMBLEND_CLUMP_EXTRACT_ASSOCIATIONS: usize = 0x4D6BE0;
+const ADDR_RPANIMBLEND_CLUMP_GIVE_ASSOCIATIONS: usize = 0x4D6C30;
+const ADDR_RPCLUMP_CLONE: usize = 0x749F70;
+const ADDR_RPCLUMP_DESTROY: usize = 0x74A310;
+const ADDR_RPCLUMP_FOR_ALL_ATOMICS: usize = 0x749B70;
+const ADDR_GET_FIRST_ATOMIC: usize = 0x734820;
+const ADDR_RPSKIN_GEOMETRY_GET_SKIN: usize = 0x7C7550;
+const ADDR_RPSKIN_GET_VERTEX_BONE_WEIGHTS: usize = 0x7C77F0;
+const ADDR_RPHANIM_ID_GET_INDEX: usize = 0x7C51A0;
+const ADDR_RTANIM_INTERPOLATOR_SET_CURRENT_ANIM: usize = 0x7CD5A0;
+const ADDR_RTANIM_ANIMATION_DESTROY: usize = 0x7CCF10;
+const ADDR_RWFRAME_TRANSFORM: usize = 0x7F0F70;
+
+// Set by RpAnimBlendPluginAttach during GTA startup. The value is the runtime
+// extension offset of CAnimBlendClumpData* inside an RpClump.
+const ADDR_RPANIMBLEND_CLUMP_OFFSET: usize = 0xB5F878;
 
 // CBaseModelInfo and CEntity offsets in GTA SA 1.0 US.
 const MODEL_INFO_TXD_INDEX: usize = 0x0A;
@@ -43,7 +75,38 @@ const PED_MODEL_INFO_SIZE: usize = 0x44;
 const PED_MODEL_INFO_HIT_COL_MODEL: usize = 0x34;
 const MODEL_FLAG_OWNS_COLLISION: u16 = 1 << 5;
 const ENTITY_MODEL_INDEX: usize = 0x22;
+const ENTITY_RW_OBJECT: usize = 0x18;
 const VTABLE_DELETE_RW_OBJECT_OFFSET: usize = 0x20;
+const PED_INTELLIGENCE: usize = 0x47C;
+const PED_INTELLIGENCE_SECONDARY_IK_TASK: usize = 0x2C;
+const CTASKSIMPLEIKMANAGER_VTABLE: usize = 0x86E358;
+const ABORT_PRIORITY_IMMEDIATE: i32 = 2;
+const RW_OBJECT_PARENT: usize = 0x04;
+const RW_FRAME_MODELLING_MATRIX: usize = 0x10;
+const RW_MATRIX_SIZE: usize = 0x40;
+const RW_COMBINE_REPLACE: i32 = 0;
+const RP_ATOMIC_GEOMETRY: usize = 0x18;
+const RP_GEOMETRY_NUM_VERTICES: usize = 0x14;
+const RP_GEOMETRY_MORPH_TARGET: usize = 0x5C;
+const RP_MORPH_TARGET_BOUNDING_SPHERE_RADIUS: usize = 0x10;
+const RW_MATRIX_WEIGHTS_SIZE: usize = 0x10;
+const MAX_PED_GEOMETRY_VERTICES: i32 = 100_000;
+const PED_BONE_ARRAY: usize = 0x488;
+const PED_ANIM_MOVING_SHIFT_LOCAL: usize = 0x4D8;
+const PED_BONE_COUNT: usize = 19;
+const HANIM_HIERARCHY_FLAGS: usize = 0x00;
+const HANIM_HIERARCHY_NODE_COUNT: usize = 0x04;
+const HANIM_HIERARCHY_CURRENT_ANIM: usize = 0x20;
+const ANIM_BLEND_DATA_FRAME_COUNT: usize = 0x08;
+const ANIM_BLEND_DATA_PED_POSITION: usize = 0x0C;
+const HANIM_UPDATE_BOTH_MATRICES: i32 = 0x3000;
+
+// ConvertPedNode2BoneTag for CPed::m_apBones[1..19]. Validating these tags
+// before RpAnimBlendClumpFillFrameArray prevents its unchecked index writes
+// from accepting a merely-present but incompatible hierarchy.
+const REQUIRED_PED_BONE_TAGS: [i32; PED_BONE_COUNT - 1] = [
+    3, 5, 32, 22, 34, 24, 41, 51, 43, 53, 52, 42, 33, 23, 31, 21, 4, 8,
+];
 
 // RenderWare enums/chunk ID.
 const RWSTREAM_FILENAME: i32 = 2;
@@ -101,6 +164,230 @@ const EXECUTABLE_SIGNATURES: &[ExecutableSignature] = &[
         expected: &[
             0x56, 0x57, 0x8B, 0x7C, 0x24, 0x0C, 0x57, 0x8B, 0xF1, 0xE8, 0x22, 0xDC, 0xFF, 0xFF,
             0x68, 0x68,
+        ],
+    },
+    ExecutableSignature {
+        name: "CPed::DeleteRwObject",
+        address: ADDR_CPED_DELETE_RW_OBJECT,
+        expected: &[
+            0xE9, 0x3B, 0x54, 0xF5, 0xFF, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+            0x90, 0x90,
+        ],
+    },
+    ExecutableSignature {
+        name: "CEntity::CreateRwObject",
+        address: ADDR_CENTITY_CREATE_RW_OBJECT,
+        expected: &[
+            0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x1C, 0x84, 0xC0, 0x0F, 0x89, 0x8E, 0x01, 0x00, 0x00,
+            0xF6, 0xC4,
+        ],
+    },
+    ExecutableSignature {
+        name: "CTaskSimpleIKManager::MakeAbortable",
+        address: ADDR_CTASKSIMPLEIKMANAGER_MAKE_ABORTABLE,
+        expected: &[
+            0x83, 0x7C, 0x24, 0x08, 0x02, 0x75, 0x29, 0x56, 0x57, 0x8D, 0x71, 0x08, 0xBF, 0x04,
+            0x00, 0x00,
+        ],
+    },
+    ExecutableSignature {
+        name: "CEntity::UpdateRwFrame",
+        address: ADDR_CENTITY_UPDATE_RW_FRAME,
+        expected: &[
+            0x8B, 0x41, 0x18, 0x85, 0xC0, 0x74, 0x0A, 0x8B, 0x40, 0x04, 0x50, 0xE8, 0x00, 0xDE,
+            0x2B, 0x00,
+        ],
+    },
+    ExecutableSignature {
+        name: "CEntity::UpdateRpHAnim",
+        address: ADDR_CENTITY_UPDATE_RP_HANIM,
+        expected: &[
+            0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x18, 0x50, 0xE8, 0xF4, 0x1C, 0x20, 0x00, 0x83, 0xC4,
+            0x04, 0x85,
+        ],
+    },
+    ExecutableSignature {
+        name: "CVisibilityPlugins::SetClumpModelInfo",
+        address: ADDR_CVISIBILITYPLUGINS_SET_CLUMP_MODEL_INFO,
+        expected: &[
+            0x8B, 0x0D, 0x90, 0x60, 0x8D, 0x00, 0x56, 0x8B, 0x74, 0x24, 0x0C, 0x57, 0x8B, 0x7C,
+            0x24, 0x0C,
+        ],
+    },
+    ExecutableSignature {
+        name: "CClumpModelInfo::SetHierarchyForSkinAtomic",
+        address: ADDR_CCLUMPMODELINFO_SET_HIERARCHY_FOR_SKIN_ATOMIC,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x08, 0x85, 0xC0, 0x74, 0x11, 0x50, 0x8B, 0x44, 0x24, 0x08, 0x50,
+            0xE8, 0x1D,
+        ],
+    },
+    ExecutableSignature {
+        name: "CClumpModelInfo::AtomicSetupLightingCB",
+        address: ADDR_CCLUMPMODELINFO_ATOMIC_SETUP_LIGHTING_CB,
+        expected: &[
+            0x56, 0x8B, 0x74, 0x24, 0x08, 0x56, 0xE8, 0x05, 0x30, 0x11, 0x00, 0x83, 0xC4, 0x04,
+            0x85, 0xC0,
+        ],
+    },
+    ExecutableSignature {
+        name: "CClumpModelInfo::SetAtomicRendererCB",
+        address: ADDR_CCLUMPMODELINFO_SET_ATOMIC_RENDERER_CB,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x08, 0x56, 0x8B, 0x74, 0x24, 0x08, 0x50, 0x56, 0xE8, 0x10, 0xD6,
+            0x26, 0x00,
+        ],
+    },
+    ExecutableSignature {
+        name: "CVisibilityPlugins::RenderPedCB",
+        address: ADDR_CVISIBILITYPLUGINS_RENDER_PED_CB,
+        expected: &[
+            0x56, 0x57, 0x8B, 0x7C, 0x24, 0x0C, 0x8B, 0x77, 0x3C, 0x8B, 0x46, 0x04, 0x50, 0xE8,
+            0xCE, 0xD3,
+        ],
+    },
+    ExecutableSignature {
+        name: "IsClumpSkinned",
+        address: ADDR_IS_CLUMP_SKINNED,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x04, 0x50, 0xE8, 0x56, 0xFA, 0x26, 0x00, 0x83, 0xC4, 0x04, 0x85,
+            0xC0, 0x74,
+        ],
+    },
+    ExecutableSignature {
+        name: "GetAnimHierarchyFromClump",
+        address: ADDR_GET_ANIM_HIERARCHY_FROM_CLUMP,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x04, 0x8B, 0x48, 0x04, 0x89, 0x4C, 0x24, 0x04, 0xE9, 0x90, 0xFF,
+            0xFF, 0xFF,
+        ],
+    },
+    ExecutableSignature {
+        name: "GetAnimHierarchyFromSkinClump",
+        address: ADDR_GET_ANIM_HIERARCHY_FROM_SKIN_CLUMP,
+        expected: &[
+            0x51, 0x8B, 0x4C, 0x24, 0x08, 0x8D, 0x44, 0x24, 0x00, 0x50, 0x68, 0x20, 0x4A, 0x73,
+            0x00, 0x51,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpAnimBlendCreateAnimationForHierarchy",
+        address: ADDR_RPANIMBLEND_CREATE_ANIMATION_FOR_HIERARCHY,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x04, 0x85, 0xC0, 0x75, 0x01, 0xC3, 0x56, 0x8B, 0x70, 0x04, 0x6A,
+            0x00, 0x6A,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpAnimBlendClumpInit",
+        address: ADDR_RPANIMBLEND_CLUMP_INIT,
+        expected: &[
+            0x56, 0x8B, 0x74, 0x24, 0x08, 0x56, 0xE8, 0xF5, 0xE0, 0x25, 0x00, 0x83, 0xC4, 0x04,
+            0x85, 0xC0,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpAnimBlendClumpFillFrameArray",
+        address: ADDR_RPANIMBLEND_CLUMP_FILL_FRAME_ARRAY,
+        expected: &[
+            0xA1, 0x78, 0xF8, 0xB5, 0x00, 0x56, 0x8B, 0x74, 0x24, 0x08, 0x57, 0x8B, 0x3C, 0x30,
+            0x56, 0xE8,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpAnimBlendClumpExtractAssociations",
+        address: ADDR_RPANIMBLEND_CLUMP_EXTRACT_ASSOCIATIONS,
+        expected: &[
+            0x8B, 0x0D, 0x78, 0xF8, 0xB5, 0x00, 0x8B, 0x44, 0x24, 0x04, 0x8B, 0x04, 0x01, 0x8B,
+            0x08, 0xC7,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpAnimBlendClumpGiveAssociations",
+        address: ADDR_RPANIMBLEND_CLUMP_GIVE_ASSOCIATIONS,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x04, 0x8B, 0x0D, 0x78, 0xF8, 0xB5, 0x00, 0x57, 0x8B, 0x3C, 0x01,
+            0x8B, 0x07,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpClumpClone",
+        address: ADDR_RPCLUMP_CLONE,
+        expected: &[
+            0x83, 0xEC, 0x14, 0x53, 0x55, 0x56, 0x57, 0xE8, 0x14, 0x03, 0x00, 0x00, 0x8B, 0xE8,
+            0x85, 0xED,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpClumpDestroy",
+        address: ADDR_RPCLUMP_DESTROY,
+        expected: &[
+            0x53, 0x55, 0x56, 0x8B, 0x74, 0x24, 0x10, 0x57, 0x56, 0x68, 0x64, 0x62, 0x8D, 0x00,
+            0xE8, 0x1D,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpClumpForAllAtomics",
+        address: ADDR_RPCLUMP_FOR_ALL_ATOMICS,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x04, 0x53, 0x55, 0x56, 0x57, 0x8D, 0x78, 0x08, 0x8B, 0x40, 0x08,
+            0x3B, 0xC7,
+        ],
+    },
+    ExecutableSignature {
+        name: "GetFirstAtomic",
+        address: ADDR_GET_FIRST_ATOMIC,
+        expected: &[
+            0x51, 0x8B, 0x4C, 0x24, 0x08, 0x8D, 0x44, 0x24, 0x00, 0x50, 0x68, 0x10, 0x48, 0x73,
+            0x00, 0x51,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpSkinGeometryGetSkin",
+        address: ADDR_RPSKIN_GEOMETRY_GET_SKIN,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x04, 0x8B, 0x0D, 0xA8, 0x78, 0xC9, 0x00, 0x8B, 0x04, 0x01, 0xC3,
+            0x90, 0x90,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpSkinGetVertexBoneWeights",
+        address: ADDR_RPSKIN_GET_VERTEX_BONE_WEIGHTS,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x04, 0x8B, 0x40, 0x18, 0xC3, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+            0x90, 0x90,
+        ],
+    },
+    ExecutableSignature {
+        name: "RpHAnimIDGetIndex",
+        address: ADDR_RPHANIM_ID_GET_INDEX,
+        expected: &[
+            0x8B, 0x54, 0x24, 0x04, 0x56, 0x83, 0xC8, 0xFF, 0x8B, 0x72, 0x10, 0x8B, 0x52, 0x04,
+            0x33, 0xC9,
+        ],
+    },
+    ExecutableSignature {
+        name: "RtAnimInterpolatorSetCurrentAnim",
+        address: ADDR_RTANIM_INTERPOLATOR_SET_CURRENT_ANIM,
+        expected: &[
+            0x53, 0x8B, 0x5C, 0x24, 0x0C, 0x55, 0x56, 0x8B, 0x74, 0x24, 0x10, 0x57, 0x33, 0xFF,
+            0x89, 0x1E,
+        ],
+    },
+    ExecutableSignature {
+        name: "RtAnimAnimationDestroy",
+        address: ADDR_RTANIM_ANIMATION_DESTROY,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x04, 0x8B, 0x0D, 0x24, 0x7B, 0xC9, 0x00, 0x50, 0xFF, 0x91, 0x38,
+            0x01, 0x00,
+        ],
+    },
+    ExecutableSignature {
+        name: "RwFrameTransform",
+        address: ADDR_RWFRAME_TRANSFORM,
+        expected: &[
+            0x8B, 0x44, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x08, 0x56, 0x8B, 0x74, 0x24, 0x08, 0x50,
+            0x51, 0x8D,
         ],
     },
     ExecutableSignature {
@@ -207,6 +494,61 @@ pub struct SkinResources {
     pub txd_slot: i32,
 }
 
+/// Source resources for the local-player instance path. The source clump and
+/// donor pointer remain opaque outside this module so callers cannot install,
+/// clone, or destroy raw RenderWare objects themselves.
+#[derive(Debug)]
+pub struct InstanceSkinResources {
+    txd_slot: i32,
+    source_clump: SourceClump,
+    donor_model_info: PedModelInfo,
+}
+
+#[derive(Debug)]
+struct SourceClump {
+    address: usize,
+}
+
+struct PreparedInstanceClump {
+    address: *mut c_void,
+    bone_frames: [*mut c_void; PED_BONE_COUNT],
+    frame_count: u32,
+}
+
+#[derive(Clone, Copy)]
+struct AnimAssociations {
+    address: *mut c_void,
+}
+
+impl AnimAssociations {
+    const fn is_empty(self) -> bool {
+        self.address.is_null()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PedModelInfo {
+    address: usize,
+}
+
+/// The exact RenderWare object Wardrobe installed on a ped. Runtime may compare
+/// handles for reset detection, but cannot dereference or destroy them.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PedRenderObject {
+    address: usize,
+    geometry: usize,
+}
+
+impl PedRenderObject {
+    pub(crate) const fn is_null(self) -> bool {
+        self.address == 0
+    }
+
+    pub(crate) const fn has_same_address(self, other: Self) -> bool {
+        self.address == other.address
+    }
+}
+
 #[derive(Debug)]
 pub struct SkinLoadFailure {
     pub recyclable_model_id: Option<i32>,
@@ -269,10 +611,373 @@ pub fn ped_model_id(ped: &Ped) -> Option<i16> {
     memory::read(model_index_address)
 }
 
+pub fn ped_render_object(ped: &Ped) -> Option<PedRenderObject> {
+    let render_object_address = (ped.address as usize).checked_add(ENTITY_RW_OBJECT)?;
+    let render_object: *mut c_void = memory::read(render_object_address)?;
+    unsafe { render_object_identity(render_object) }
+}
+
 pub fn set_ped_model_index(_frame: &GameFrame, ped: &Ped, model_id: i32) {
     type SetModelIndex = unsafe extern "thiscall" fn(*mut c_void, i32);
     let function: SetModelIndex = unsafe { std::mem::transmute(ADDR_CPED_SET_MODEL_INDEX) };
     unsafe { function(ped.address, model_id) };
+}
+
+/// Loads a TXD and raw source clump for the local-player instance path. Unlike
+/// `load_skin`, this never allocates or mutates a GTA model-info slot.
+pub fn load_instance_skin(
+    _frame: &GameFrame,
+    skin_id: &str,
+    definition: &SkinDefinition,
+) -> Option<InstanceSkinResources> {
+    if !Path::new(&definition.txd_path).is_file() {
+        log::error!(
+            "instance skin {skin_id}: TXD file does not exist or is not a file: {}",
+            definition.txd_path
+        );
+        return None;
+    }
+    if !Path::new(&definition.dff_path).is_file() {
+        log::error!(
+            "instance skin {skin_id}: DFF file does not exist or is not a file: {}",
+            definition.dff_path
+        );
+        return None;
+    }
+
+    let donor_model_info = match unsafe { verified_ped_model_info(definition.donor_model_id) } {
+        Ok(model_info) => PedModelInfo {
+            address: model_info as usize,
+        },
+        Err(reason) => {
+            log::error!(
+                "instance skin {skin_id}: donor model {} {reason}",
+                definition.donor_model_id
+            );
+            return None;
+        }
+    };
+
+    let txd_path = match CString::new(definition.txd_path.as_str()) {
+        Ok(path) => path,
+        Err(_) => {
+            log::error!(
+                "instance skin {skin_id}: TXD path contains a NUL byte: {:?}",
+                definition.txd_path
+            );
+            return None;
+        }
+    };
+    let txd_name = CString::new(format!("csl_i_{:016x}", stable_name_hash(skin_id)))
+        .expect("hexadecimal TXD name cannot contain NUL");
+
+    log::info!(
+        "loading local instance skin {skin_id}: donor={}, txd={}, dff={}",
+        definition.donor_model_id,
+        definition.txd_path,
+        definition.dff_path
+    );
+
+    let txd_slot: i32 = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_TXD_SLOT, txd_name.as_ptr()) };
+    if txd_slot < 0 {
+        log::error!("instance skin {skin_id}: could not allocate a TXD slot");
+        return None;
+    }
+
+    let loaded: u8 = unsafe { call_cdecl_2(ADDR_CTXDSTORE_LOAD_TXD, txd_slot, txd_path.as_ptr()) };
+    if loaded == 0 {
+        log::error!(
+            "instance skin {skin_id}: could not load TXD from {} into slot {txd_slot}",
+            definition.txd_path
+        );
+        unsafe { remove_txd_slot(txd_slot, false) };
+        return None;
+    }
+    let _: *mut c_void = unsafe { call_cdecl_1(ADDR_CTXDSTORE_ADD_REF, txd_slot) };
+
+    let source_clump = match unsafe { load_dff_clump(txd_slot, &definition.dff_path) } {
+        Some(clump) => clump,
+        None => {
+            unsafe { remove_txd_slot(txd_slot, true) };
+            return None;
+        }
+    };
+
+    if let Err(reason) =
+        unsafe { prepare_instance_source(source_clump, donor_model_info.address as *mut c_void) }
+    {
+        log::error!("instance skin {skin_id}: incompatible DFF source: {reason}");
+        if unsafe { destroy_clump(source_clump) } {
+            unsafe { remove_txd_slot(txd_slot, true) };
+        } else {
+            log::error!(
+                "instance skin {skin_id}: could not destroy rejected source clump; retaining TXD slot {txd_slot} to avoid dangling textures"
+            );
+        }
+        return None;
+    }
+    log::info!(
+        "loaded local instance skin {skin_id}: donor={}, txd_slot={}, txd={}, dff={} (no private model allocated)",
+        definition.donor_model_id,
+        txd_slot,
+        definition.txd_path,
+        definition.dff_path
+    );
+    Some(InstanceSkinResources {
+        txd_slot,
+        source_clump: SourceClump {
+            address: source_clump as usize,
+        },
+        donor_model_info,
+    })
+}
+
+/// Clones and installs a local-player render object while preserving the ped's
+/// model index. Failures either leave the original clump untouched or recover
+/// GTA's ordinary clump for `server_model_id` after a swap has started.
+pub fn apply_instance_skin(
+    frame: &GameFrame,
+    ped: &Ped,
+    server_model_id: i16,
+    resources: &InstanceSkinResources,
+) -> Result<PedRenderObject, &'static str> {
+    if ped_model_id(ped) != Some(server_model_id) {
+        return Err("ped model changed before the instance swap");
+    }
+    let old_clump = ped_render_object(ped)
+        .filter(|object| !object.is_null())
+        .map(|object| object.address as *mut c_void)
+        .ok_or("ped has no ordinary render object to replace")?;
+    let old_frame_count = unsafe { anim_blend_frame_count(old_clump) }
+        .map_err(|_| "ped's ordinary clump has invalid AnimBlend frame data")?;
+
+    let source_clump = resources.source_clump.address as *mut c_void;
+    log::debug!("local instance swap: cloning the cached custom ped source");
+    let clone = unsafe { clone_clump(source_clump) };
+    if clone.is_null() {
+        return Err("RpClumpClone returned null");
+    }
+    log::debug!("local instance swap: cloned and preparing the custom ped clump");
+    let prepared = match unsafe {
+        prepare_instance_clone(
+            clone,
+            resources.donor_model_info.address as *mut c_void,
+            ped,
+        )
+    } {
+        Ok(prepared) => prepared,
+        Err(reason) => {
+            if !unsafe { destroy_clump(clone) } {
+                log::error!("could not destroy an unattached instance-clump clone after: {reason}");
+            }
+            return Err(reason);
+        }
+    };
+    let installed = match unsafe { render_object_identity(prepared.address) } {
+        Some(identity) => identity,
+        None => {
+            if !unsafe { destroy_clump(prepared.address) } {
+                log::error!(
+                    "could not destroy an unattached instance-clump clone after its geometry identity could not be read"
+                );
+            }
+            return Err("could not identify the prepared instance clump geometry");
+        }
+    };
+    if prepared.frame_count != old_frame_count {
+        if !unsafe { destroy_clump(prepared.address) } {
+            log::error!(
+                "could not destroy an unattached instance-clump clone after an AnimBlend frame-count mismatch"
+            );
+        }
+        return Err("custom DFF bone count differs from the live ped skeleton");
+    }
+    // GTA uses this exact transfer pair while rebuilding CJ's clothes. Moving
+    // the list before destruction preserves the current walk/weapon/task
+    // animations instead of replacing them with a fresh idle association.
+    let associations = unsafe { extract_anim_associations(old_clump) };
+    if associations.is_empty() {
+        if !unsafe { destroy_clump(prepared.address) } {
+            log::error!(
+                "could not destroy an unattached instance-clump clone after finding no live animation associations"
+            );
+        }
+        return Err("ped's ordinary clump has no live animation associations");
+    }
+    unsafe { give_anim_associations(prepared.address, associations) };
+    if let Err(reason) = unsafe { abort_secondary_ik(ped) } {
+        unsafe { return_associations(prepared.address, old_clump) };
+        if !unsafe { destroy_clump(prepared.address) } {
+            log::error!("could not destroy an unattached instance-clump clone after: {reason}");
+        }
+        return Err(reason);
+    }
+
+    log::debug!("local instance swap: prepared clone; deleting the ordinary ped render object");
+    if let Err(reason) = unsafe { delete_entity_rw_object(ped) } {
+        unsafe { return_associations(prepared.address, old_clump) };
+        if !unsafe { destroy_clump(prepared.address) } {
+            log::error!("could not destroy an unattached instance-clump clone after: {reason}");
+        }
+        return Err(reason);
+    }
+    log::debug!(
+        "local instance swap: ordinary render object deleted; restoring entity bookkeeping"
+    );
+
+    // DeleteRwObject correctly releases the server model reference, streaming
+    // link, and effects. Recreate them through CEntity, then discard only its
+    // temporary ordinary clump so the custom object inherits valid entity
+    // bookkeeping without ever owning or changing a model ID.
+    if let Err(reason) = unsafe { create_entity_rw_object(ped) } {
+        unsafe {
+            recover_server_clump_after_failed_swap(
+                frame,
+                ped,
+                server_model_id,
+                prepared.address,
+                reason,
+            )
+        };
+        return Err(reason);
+    }
+    log::debug!("local instance swap: entity bookkeeping restored; replacing the temporary clump");
+    let temporary_clump = match ped_render_object(ped)
+        .filter(|object| !object.is_null())
+        .map(|object| object.address as *mut c_void)
+    {
+        Some(clump) => clump,
+        None => {
+            let reason = "CEntity::CreateRwObject did not install a temporary server clump";
+            unsafe {
+                recover_server_clump_after_failed_swap(
+                    frame,
+                    ped,
+                    server_model_id,
+                    prepared.address,
+                    reason,
+                )
+            };
+            return Err(reason);
+        }
+    };
+    if let Err(reason) = unsafe { position_instance_clump(temporary_clump, prepared.address) } {
+        unsafe {
+            recover_server_clump_after_failed_swap(
+                frame,
+                ped,
+                server_model_id,
+                prepared.address,
+                reason,
+            )
+        };
+        return Err(reason);
+    }
+    if !unsafe { destroy_clump(temporary_clump) } {
+        let reason = "could not destroy the temporary server clump";
+        unsafe {
+            recover_server_clump_after_failed_swap(
+                frame,
+                ped,
+                server_model_id,
+                prepared.address,
+                reason,
+            )
+        };
+        return Err(reason);
+    }
+
+    unsafe {
+        let render_object = (ped.address as usize + ENTITY_RW_OBJECT) as *mut *mut c_void;
+        *render_object = std::ptr::null_mut();
+        *render_object = prepared.address;
+        std::ptr::copy_nonoverlapping(
+            prepared.bone_frames.as_ptr(),
+            (ped.address as usize + PED_BONE_ARRAY) as *mut *mut c_void,
+            PED_BONE_COUNT,
+        );
+    }
+    if ped_render_object(ped) != Some(installed) {
+        let _ = restore_instance_skin(frame, ped, server_model_id, installed);
+        return Err("ped render-object replacement could not be verified");
+    }
+    if ped_model_id(ped) != Some(server_model_id) {
+        let _ = restore_instance_skin(frame, ped, server_model_id, installed);
+        return Err("instance replacement changed the ped model index");
+    }
+
+    unsafe {
+        update_rw_frame(ped);
+        update_rp_hanim(ped);
+    }
+    log::debug!("local instance swap: installed and updated the custom ped clump");
+
+    Ok(installed)
+}
+
+/// Removes a matching local instance clump through the ped's virtual entity
+/// lifecycle and lets CPed rebuild the remembered server model. Animation
+/// associations are transferred exactly as GTA does for a clothing rebuild.
+pub fn restore_instance_skin(
+    frame: &GameFrame,
+    ped: &Ped,
+    server_model_id: i16,
+    installed: PedRenderObject,
+) -> Result<(), &'static str> {
+    let current = ped_render_object(ped).ok_or("could not read the ped render object")?;
+    if current != installed {
+        return Err("the installed instance clump was already replaced");
+    }
+    let clump = current.address as *mut c_void;
+    let associations = match unsafe { anim_blend_data(clump) } {
+        Ok(_) => unsafe { extract_anim_associations(clump) },
+        Err(_) => AnimAssociations {
+            address: std::ptr::null_mut(),
+        },
+    };
+    if let Err(reason) = unsafe { abort_secondary_ik(ped) } {
+        if !associations.is_empty() {
+            unsafe { give_anim_associations(clump, associations) };
+        }
+        return Err(reason);
+    }
+    if let Err(reason) = unsafe { delete_entity_rw_object(ped) } {
+        if !associations.is_empty() {
+            unsafe { give_anim_associations(clump, associations) };
+        }
+        return Err(reason);
+    }
+
+    set_ped_model_index(frame, ped, server_model_id as i32);
+    let rebuilt = ped_render_object(ped)
+        .filter(|object| !object.is_null() && *object != installed)
+        .ok_or("CPed::SetModelIndex did not rebuild a normal render object")?;
+    if !associations.is_empty() {
+        unsafe { give_anim_associations(rebuilt.address as *mut c_void, associations) };
+    }
+    if ped_model_id(ped) != Some(server_model_id) {
+        return Err("CPed::SetModelIndex did not restore the remembered server model");
+    }
+    Ok(())
+}
+
+pub fn release_instance_skin_resources(
+    _frame: &GameFrame,
+    skin_id: &str,
+    resources: &InstanceSkinResources,
+) -> bool {
+    let source_clump = resources.source_clump.address as *mut c_void;
+    if !unsafe { destroy_clump(source_clump) } {
+        log::error!("instance skin {skin_id}: could not destroy retired source clump");
+        return false;
+    }
+
+    unsafe { remove_txd_slot(resources.txd_slot, true) };
+    log::info!(
+        "cleaned retired local instance skin {skin_id}: txd_slot={}",
+        resources.txd_slot
+    );
+    true
 }
 
 /// Loads one configured TXD/DFF pair into a private ped slot cloned from its
@@ -471,6 +1176,546 @@ unsafe fn call_cdecl_4<R, A1, A2, A3, A4>(
     let function: unsafe extern "cdecl" fn(A1, A2, A3, A4) -> R =
         unsafe { std::mem::transmute(address) };
     unsafe { function(arg1, arg2, arg3, arg4) }
+}
+
+unsafe fn clone_clump(clump: *mut c_void) -> *mut c_void {
+    unsafe { call_cdecl_1(ADDR_RPCLUMP_CLONE, clump) }
+}
+
+unsafe fn render_object_identity(clump: *mut c_void) -> Option<PedRenderObject> {
+    if clump.is_null() {
+        return Some(PedRenderObject {
+            address: 0,
+            geometry: 0,
+        });
+    }
+    let atomic: *mut c_void = unsafe { call_cdecl_1(ADDR_GET_FIRST_ATOMIC, clump) };
+    if atomic.is_null() {
+        return None;
+    }
+    let geometry: *mut c_void = memory::read(atomic as usize + RP_ATOMIC_GEOMETRY)?;
+    if geometry.is_null() {
+        return None;
+    }
+    Some(PedRenderObject {
+        address: clump as usize,
+        geometry: geometry as usize,
+    })
+}
+
+unsafe fn destroy_clump(clump: *mut c_void) -> bool {
+    let destroyed: i32 = unsafe { call_cdecl_1(ADDR_RPCLUMP_DESTROY, clump) };
+    destroyed != 0
+}
+
+unsafe fn prepare_instance_source(
+    clump: *mut c_void,
+    model_info: *mut c_void,
+) -> Result<(), &'static str> {
+    let hierarchy = unsafe { validated_ped_hierarchy(clump) }?;
+    unsafe { prepare_instance_geometry(clump) }?;
+    unsafe { setup_instance_atomics(clump, hierarchy, model_info, true) }?;
+    Ok(())
+}
+
+unsafe fn prepare_instance_clone(
+    clump: *mut c_void,
+    model_info: *mut c_void,
+    ped: &Ped,
+) -> Result<PreparedInstanceClump, &'static str> {
+    let hierarchy = unsafe { validated_ped_hierarchy(clump) }?;
+    let hierarchy_node_count = unsafe { hierarchy_node_count(hierarchy) }?;
+    unsafe { setup_instance_atomics(clump, hierarchy, model_info, false) }?;
+
+    let animation: *mut c_void =
+        unsafe { call_cdecl_1(ADDR_RPANIMBLEND_CREATE_ANIMATION_FOR_HIERARCHY, hierarchy) };
+    if animation.is_null() {
+        return Err("could not create the hierarchy's initial RenderWare animation");
+    }
+    let Some(interpolator): Option<*mut c_void> =
+        memory::read(hierarchy as usize + HANIM_HIERARCHY_CURRENT_ANIM)
+    else {
+        unsafe { destroy_animation(animation) };
+        return Err("could not read the hierarchy animation interpolator");
+    };
+    if interpolator.is_null() {
+        unsafe { destroy_animation(animation) };
+        return Err("ped hierarchy has no animation interpolator");
+    }
+    let current_set: i32 = unsafe {
+        call_cdecl_2(
+            ADDR_RTANIM_INTERPOLATOR_SET_CURRENT_ANIM,
+            interpolator,
+            animation,
+        )
+    };
+    if current_set == 0 {
+        unsafe { destroy_animation(animation) };
+        return Err("RenderWare rejected the hierarchy's initial animation");
+    }
+    unsafe {
+        *(hierarchy.cast::<i32>().byte_add(HANIM_HIERARCHY_FLAGS)) = HANIM_UPDATE_BOTH_MATRICES;
+        call_cdecl_1::<(), _>(ADDR_RPANIMBLEND_CLUMP_INIT, clump);
+    }
+
+    let anim_data = unsafe { anim_blend_data(clump) }?;
+    let frame_count = unsafe { anim_blend_frame_count_from_data(anim_data) }?;
+    if frame_count != hierarchy_node_count as u32 {
+        return Err("skin bone count differs from its animation hierarchy node count");
+    }
+    let mut bone_frames: [*mut c_void; PED_BONE_COUNT] = [std::ptr::null_mut(); PED_BONE_COUNT];
+    unsafe {
+        call_cdecl_2::<(), _, _>(
+            ADDR_RPANIMBLEND_CLUMP_FILL_FRAME_ARRAY,
+            clump,
+            bone_frames.as_mut_ptr(),
+        );
+    }
+    if bone_frames[1..].iter().any(|frame| frame.is_null()) {
+        return Err("AnimBlend did not resolve every required CPed bone frame");
+    }
+    unsafe {
+        *((anim_data as usize + ANIM_BLEND_DATA_PED_POSITION) as *mut *mut c_void) =
+            (ped.address as usize + PED_ANIM_MOVING_SHIFT_LOCAL) as *mut c_void;
+    }
+
+    Ok(PreparedInstanceClump {
+        address: clump,
+        bone_frames,
+        frame_count,
+    })
+}
+
+unsafe fn validated_ped_hierarchy(clump: *mut c_void) -> Result<*mut c_void, &'static str> {
+    let skinned: u8 = unsafe { call_cdecl_1(ADDR_IS_CLUMP_SKINNED, clump) };
+    if skinned == 0 {
+        return Err("DFF clump is not skinned");
+    }
+    let hierarchy = unsafe { anim_hierarchy_from_clump(clump) };
+    if hierarchy.is_null() {
+        return Err("DFF clump has no animation hierarchy");
+    }
+    let node_count = unsafe { hierarchy_node_count(hierarchy) }?;
+    for bone_tag in REQUIRED_PED_BONE_TAGS {
+        let index: i32 = unsafe { call_cdecl_2(ADDR_RPHANIM_ID_GET_INDEX, hierarchy, bone_tag) };
+        if index < 0 || index >= node_count {
+            return Err("DFF hierarchy is missing a required GTA ped bone");
+        }
+    }
+    Ok(hierarchy)
+}
+
+/// Mirrors the skinned-geometry preparation performed by
+/// `CClumpModelInfo::SetClump` without giving the donor model-info ownership of
+/// this source. `RpClumpClone` shares the prepared geometry with its instances.
+unsafe fn prepare_instance_geometry(clump: *mut c_void) -> Result<(), &'static str> {
+    let atomic: *mut c_void = unsafe { call_cdecl_1(ADDR_GET_FIRST_ATOMIC, clump) };
+    if atomic.is_null() {
+        return Err("DFF clump has no atomic");
+    }
+    let Some(geometry): Option<*mut c_void> = memory::read(atomic as usize + RP_ATOMIC_GEOMETRY)
+    else {
+        return Err("could not read the DFF atomic geometry");
+    };
+    if geometry.is_null() {
+        return Err("DFF atomic has no geometry");
+    }
+
+    let skin: *mut c_void = unsafe { call_cdecl_1(ADDR_RPSKIN_GEOMETRY_GET_SKIN, geometry) };
+    if skin.is_null() {
+        return Err("DFF geometry has no skin");
+    }
+    let Some(vertex_count): Option<i32> =
+        memory::read(geometry as usize + RP_GEOMETRY_NUM_VERTICES)
+    else {
+        return Err("could not read the DFF geometry vertex count");
+    };
+    if !(1..=MAX_PED_GEOMETRY_VERTICES).contains(&vertex_count) {
+        return Err("DFF geometry vertex count is outside the supported range");
+    }
+
+    let weights: *mut c_void = unsafe { call_cdecl_1(ADDR_RPSKIN_GET_VERTEX_BONE_WEIGHTS, skin) };
+    if weights.is_null() || !(weights as usize).is_multiple_of(std::mem::align_of::<f32>()) {
+        return Err("DFF skin has an invalid vertex-weight array");
+    }
+    let weights_size = usize::try_from(vertex_count)
+        .ok()
+        .and_then(|count| count.checked_mul(RW_MATRIX_WEIGHTS_SIZE))
+        .ok_or("DFF skin vertex-weight size overflowed")?;
+    let weight_bytes = memory::read_bytes(weights as usize, weights_size)
+        .ok_or("could not read the DFF skin vertex weights")?;
+    let mut reciprocals = Vec::with_capacity(vertex_count as usize);
+    let mut minimum_sum = f32::INFINITY;
+    let mut maximum_sum = f32::NEG_INFINITY;
+    for bytes in weight_bytes.chunks_exact(RW_MATRIX_WEIGHTS_SIZE) {
+        let sum = bytes
+            .chunks_exact(std::mem::size_of::<f32>())
+            .map(|component| {
+                f32::from_ne_bytes(
+                    component
+                        .try_into()
+                        .expect("a weight component has exactly four bytes"),
+                )
+            })
+            .try_fold(0.0_f32, |sum, component| {
+                component.is_finite().then_some(sum + component)
+            })
+            .ok_or("DFF skin contains a non-finite vertex weight")?;
+        if !sum.is_finite() || sum.abs() <= f32::EPSILON {
+            return Err("DFF skin contains a vertex with no usable bone weight");
+        }
+        minimum_sum = minimum_sum.min(sum);
+        maximum_sum = maximum_sum.max(sum);
+        reciprocals.push(sum.recip());
+    }
+    for (vertex, reciprocal) in reciprocals.into_iter().enumerate() {
+        let weights = (weights as *mut f32).wrapping_add(vertex * 4);
+        for component in 0..4 {
+            unsafe { *weights.add(component) *= reciprocal };
+        }
+    }
+
+    let Some(morph_target): Option<*mut c_void> =
+        memory::read(geometry as usize + RP_GEOMETRY_MORPH_TARGET)
+    else {
+        return Err("could not read the DFF geometry morph target");
+    };
+    if morph_target.is_null() {
+        return Err("DFF geometry has no morph target");
+    }
+    let radius_address = morph_target as usize + RP_MORPH_TARGET_BOUNDING_SPHERE_RADIUS;
+    let Some(radius): Option<f32> = memory::read(radius_address) else {
+        return Err("could not read the DFF geometry bounding sphere");
+    };
+    let expanded_radius = radius * 1.2;
+    if !radius.is_finite() || radius <= 0.0 || !expanded_radius.is_finite() {
+        return Err("DFF geometry has an invalid bounding sphere");
+    }
+    unsafe { *(radius_address as *mut f32) = expanded_radius };
+
+    log::debug!(
+        "local instance source: normalized {vertex_count} skin weights (sums {minimum_sum:.4}..{maximum_sum:.4}) and expanded its render bounds"
+    );
+    Ok(())
+}
+
+unsafe fn hierarchy_node_count(hierarchy: *mut c_void) -> Result<i32, &'static str> {
+    let Some(node_count): Option<i32> =
+        memory::read(hierarchy as usize + HANIM_HIERARCHY_NODE_COUNT)
+    else {
+        return Err("could not read the DFF hierarchy node count");
+    };
+    if !(1..=64).contains(&node_count) {
+        return Err("DFF hierarchy node count is outside GTA's ped limit");
+    }
+    Ok(node_count)
+}
+
+unsafe fn setup_instance_atomics(
+    clump: *mut c_void,
+    hierarchy: *mut c_void,
+    model_info: *mut c_void,
+    configure_source_rendering: bool,
+) -> Result<(), &'static str> {
+    unsafe {
+        set_clump_model_info(clump, model_info);
+        if configure_source_rendering {
+            // CClumpModelInfo::SetClump performs these once on the streamed
+            // model source. RpClumpClone carries both into each instance.
+            for_all_atomics(
+                clump,
+                ADDR_CCLUMPMODELINFO_ATOMIC_SETUP_LIGHTING_CB,
+                model_info,
+            );
+            for_all_atomics(
+                clump,
+                ADDR_CCLUMPMODELINFO_SET_ATOMIC_RENDERER_CB,
+                ADDR_CVISIBILITYPLUGINS_RENDER_PED_CB as *mut c_void,
+            );
+        }
+        for_all_atomics(
+            clump,
+            ADDR_CCLUMPMODELINFO_SET_HIERARCHY_FOR_SKIN_ATOMIC,
+            hierarchy,
+        );
+        *(hierarchy.cast::<i32>().byte_add(HANIM_HIERARCHY_FLAGS)) = HANIM_UPDATE_BOTH_MATRICES;
+    }
+    if unsafe { anim_hierarchy_from_skin_clump(clump) } != hierarchy {
+        return Err("could not attach the DFF hierarchy to its skinned atomic");
+    }
+    Ok(())
+}
+
+unsafe fn anim_hierarchy_from_clump(clump: *mut c_void) -> *mut c_void {
+    unsafe { call_cdecl_1(ADDR_GET_ANIM_HIERARCHY_FROM_CLUMP, clump) }
+}
+
+unsafe fn anim_hierarchy_from_skin_clump(clump: *mut c_void) -> *mut c_void {
+    unsafe { call_cdecl_1(ADDR_GET_ANIM_HIERARCHY_FROM_SKIN_CLUMP, clump) }
+}
+
+unsafe fn for_all_atomics(clump: *mut c_void, callback: usize, data: *mut c_void) {
+    let _: *mut c_void = unsafe {
+        call_cdecl_3(
+            ADDR_RPCLUMP_FOR_ALL_ATOMICS,
+            clump,
+            callback as *mut c_void,
+            data,
+        )
+    };
+}
+
+unsafe fn set_clump_model_info(clump: *mut c_void, model_info: *mut c_void) {
+    unsafe {
+        call_cdecl_2::<(), _, _>(
+            ADDR_CVISIBILITYPLUGINS_SET_CLUMP_MODEL_INFO,
+            clump,
+            model_info,
+        )
+    };
+}
+
+unsafe fn anim_blend_data(clump: *mut c_void) -> Result<*mut c_void, &'static str> {
+    let Some(offset): Option<u32> = memory::read(ADDR_RPANIMBLEND_CLUMP_OFFSET) else {
+        return Err("could not read the AnimBlend clump-plugin offset");
+    };
+    if !(0x20..=0x400).contains(&offset) {
+        return Err("AnimBlend clump-plugin offset is outside the expected range");
+    }
+    let Some(data): Option<*mut c_void> = memory::read(clump as usize + offset as usize) else {
+        return Err("could not read the clump's AnimBlend data pointer");
+    };
+    if data.is_null() {
+        return Err("clump has no initialized AnimBlend data");
+    }
+    Ok(data)
+}
+
+unsafe fn anim_blend_frame_count(clump: *mut c_void) -> Result<u32, &'static str> {
+    let data = unsafe { anim_blend_data(clump) }?;
+    unsafe { anim_blend_frame_count_from_data(data) }
+}
+
+unsafe fn anim_blend_frame_count_from_data(data: *mut c_void) -> Result<u32, &'static str> {
+    let Some(frame_count): Option<u32> = memory::read(data as usize + ANIM_BLEND_DATA_FRAME_COUNT)
+    else {
+        return Err("could not read the clump's AnimBlend frame count");
+    };
+    if !(1..=64).contains(&frame_count) {
+        return Err("clump AnimBlend frame count is outside GTA's ped limit");
+    }
+    Ok(frame_count)
+}
+
+unsafe fn extract_anim_associations(clump: *mut c_void) -> AnimAssociations {
+    AnimAssociations {
+        address: unsafe { call_cdecl_1(ADDR_RPANIMBLEND_CLUMP_EXTRACT_ASSOCIATIONS, clump) },
+    }
+}
+
+unsafe fn give_anim_associations(clump: *mut c_void, associations: AnimAssociations) {
+    debug_assert!(!associations.is_empty());
+    unsafe {
+        call_cdecl_2::<(), _, _>(
+            ADDR_RPANIMBLEND_CLUMP_GIVE_ASSOCIATIONS,
+            clump,
+            associations.address,
+        )
+    };
+}
+
+unsafe fn return_associations(from: *mut c_void, to: *mut c_void) {
+    let associations = unsafe { extract_anim_associations(from) };
+    if !associations.is_empty() {
+        unsafe { give_anim_associations(to, associations) };
+    }
+}
+
+unsafe fn destroy_animation(animation: *mut c_void) {
+    let _: i32 = unsafe { call_cdecl_1(ADDR_RTANIM_ANIMATION_DESTROY, animation) };
+}
+
+/// Applies the temporary ordinary clump's world transform through RenderWare's
+/// frame API. A raw matrix copy leaves the destination hierarchy clean, so
+/// `RwFrameUpdateObjects` may retain the source DFF's stale LTM and render the
+/// replacement away from the ped.
+unsafe fn position_instance_clump(
+    source: *mut c_void,
+    destination: *mut c_void,
+) -> Result<(), &'static str> {
+    let Some(source_frame): Option<*mut c_void> = memory::read(source as usize + RW_OBJECT_PARENT)
+    else {
+        return Err("could not read the temporary server clump's root frame");
+    };
+    let Some(destination_frame): Option<*mut c_void> =
+        memory::read(destination as usize + RW_OBJECT_PARENT)
+    else {
+        return Err("could not read the instance clump's root frame");
+    };
+    if source_frame.is_null() || destination_frame.is_null() {
+        return Err("a replacement clump has no root frame");
+    }
+    let source_matrix = source_frame as usize + RW_FRAME_MODELLING_MATRIX;
+    if memory::read_bytes(source_matrix, RW_MATRIX_SIZE).is_none() {
+        return Err("could not read the temporary server clump's modeling matrix");
+    }
+
+    let transformed: *mut c_void = unsafe {
+        call_cdecl_3(
+            ADDR_RWFRAME_TRANSFORM,
+            destination_frame,
+            source_matrix as *const c_void,
+            RW_COMBINE_REPLACE,
+        )
+    };
+    if transformed != destination_frame {
+        return Err("RwFrameTransform could not position the instance clump");
+    }
+    Ok(())
+}
+
+unsafe fn abort_secondary_ik(ped: &Ped) -> Result<(), &'static str> {
+    let Some(intelligence): Option<*mut c_void> =
+        memory::read(ped.address as usize + PED_INTELLIGENCE)
+    else {
+        return Err("could not read the ped intelligence pointer");
+    };
+    if intelligence.is_null() {
+        return Err("ped has no intelligence object");
+    }
+    let Some(task): Option<*mut c_void> =
+        memory::read(intelligence as usize + PED_INTELLIGENCE_SECONDARY_IK_TASK)
+    else {
+        return Err("could not read the ped's secondary IK task");
+    };
+    if task.is_null() {
+        return Ok(());
+    }
+    if memory::read::<usize>(task as usize) != Some(CTASKSIMPLEIKMANAGER_VTABLE) {
+        return Err("ped has an unsupported task in the secondary IK slot");
+    }
+
+    type MakeAbortable =
+        unsafe extern "thiscall" fn(*mut c_void, *mut c_void, i32, *mut c_void) -> u8;
+    let function: MakeAbortable =
+        unsafe { std::mem::transmute(ADDR_CTASKSIMPLEIKMANAGER_MAKE_ABORTABLE) };
+    let aborted = unsafe {
+        function(
+            task,
+            ped.address,
+            ABORT_PRIORITY_IMMEDIATE,
+            std::ptr::null_mut(),
+        )
+    };
+    if aborted == 0 {
+        return Err("GTA refused to abort the secondary IK task");
+    }
+    log::debug!("local instance swap: aborted secondary IK before replacing ped bones");
+    Ok(())
+}
+
+unsafe fn update_rw_frame(ped: &Ped) {
+    type UpdateRwFrame = unsafe extern "thiscall" fn(*mut c_void);
+    let function: UpdateRwFrame = unsafe { std::mem::transmute(ADDR_CENTITY_UPDATE_RW_FRAME) };
+    unsafe { function(ped.address) };
+}
+
+unsafe fn update_rp_hanim(ped: &Ped) {
+    type UpdateRpHAnim = unsafe extern "thiscall" fn(*mut c_void);
+    let function: UpdateRpHAnim = unsafe { std::mem::transmute(ADDR_CENTITY_UPDATE_RP_HANIM) };
+    unsafe { function(ped.address) };
+}
+
+unsafe fn recover_server_clump_after_failed_swap(
+    frame: &GameFrame,
+    ped: &Ped,
+    server_model_id: i16,
+    prepared_clump: *mut c_void,
+    reason: &'static str,
+) {
+    let associations = unsafe { extract_anim_associations(prepared_clump) };
+    if ped_render_object(ped).is_some_and(|object| !object.is_null())
+        && let Err(delete_reason) = unsafe { delete_entity_rw_object(ped) }
+    {
+        if !associations.is_empty() {
+            unsafe { give_anim_associations(prepared_clump, associations) };
+        }
+        log::error!(
+            "could not clean the temporary server clump while recovering from {reason}: {delete_reason}; retaining the unattached prepared clone to avoid destroying its live animations"
+        );
+        return;
+    }
+
+    set_ped_model_index(frame, ped, server_model_id as i32);
+    let rebuilt = ped_render_object(ped).filter(|object| !object.is_null());
+    if let Some(rebuilt) = rebuilt {
+        if !associations.is_empty() {
+            unsafe {
+                give_anim_associations(rebuilt.address as *mut c_void, associations);
+            }
+        }
+        if !unsafe { destroy_clump(prepared_clump) } {
+            log::error!("could not destroy the prepared clone while recovering from {reason}");
+        }
+    } else {
+        if !associations.is_empty() {
+            unsafe { give_anim_associations(prepared_clump, associations) };
+        }
+        log::error!(
+            "could not rebuild server model {server_model_id} while recovering from {reason}; retaining the prepared clone to avoid destroying its live animations"
+        );
+    }
+}
+
+unsafe fn create_entity_rw_object(ped: &Ped) -> Result<(), &'static str> {
+    if ped_render_object(ped).is_some_and(|object| !object.is_null()) {
+        return Err("CEntity::CreateRwObject called while the ped still had a render object");
+    }
+    type CreateRwObject = unsafe extern "thiscall" fn(*mut c_void);
+    let function: CreateRwObject = unsafe { std::mem::transmute(ADDR_CENTITY_CREATE_RW_OBJECT) };
+    unsafe { function(ped.address) };
+    if ped_render_object(ped).is_some_and(|object| !object.is_null()) {
+        Ok(())
+    } else {
+        Err("CEntity::CreateRwObject did not rebuild the temporary server clump")
+    }
+}
+
+/// Calls the ped's virtual CEntity::DeleteRwObject implementation. A successful
+/// call must clear m_pRwClump before the replacement can be installed.
+unsafe fn delete_entity_rw_object(ped: &Ped) -> Result<(), &'static str> {
+    let Some(current): Option<*mut c_void> = memory::read(ped.address as usize + ENTITY_RW_OBJECT)
+    else {
+        return Err("could not read the ped's current render object");
+    };
+    if current.is_null() {
+        return Ok(());
+    }
+
+    let Some(vtable): Option<usize> = memory::read(ped.address as usize) else {
+        return Err("could not read the ped vtable");
+    };
+    let Some(function_address): Option<usize> =
+        memory::read(vtable + VTABLE_DELETE_RW_OBJECT_OFFSET)
+    else {
+        return Err("could not read CEntity::DeleteRwObject from the ped vtable");
+    };
+    if function_address == 0 {
+        return Err("CEntity::DeleteRwObject is null in the ped vtable");
+    }
+    if function_address != ADDR_CPED_DELETE_RW_OBJECT {
+        return Err("ped vtable has an unsupported CEntity::DeleteRwObject target");
+    }
+
+    type DeleteRwObject = unsafe extern "thiscall" fn(*mut c_void);
+    let function: DeleteRwObject = unsafe { std::mem::transmute(function_address) };
+    unsafe { function(ped.address) };
+
+    match memory::read::<*mut c_void>(ped.address as usize + ENTITY_RW_OBJECT) {
+        Some(render_object) if render_object.is_null() => Ok(()),
+        Some(_) => Err("CEntity::DeleteRwObject did not clear the ped render object"),
+        None => Err("could not verify CEntity::DeleteRwObject completion"),
+    }
 }
 
 unsafe fn set_ped_model_clump(model_info: *mut c_void, clump: *mut c_void) {
@@ -689,15 +1934,35 @@ fn hex(bytes: &[u8]) -> String {
         .join(" ")
 }
 
+fn stable_name_hash(text: &str) -> u64 {
+    text.as_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01B3)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ADDR_CGAME_PROCESS, ADDR_CMODELINFO_ADD_PED_MODEL, ADDR_CPED_SET_MODEL_INDEX,
-        ADDR_CPEDMODELINFO_SETCLUMP, ADDR_CTXDSTORE_ADD_REF, ADDR_CTXDSTORE_ADD_TXD_SLOT,
-        ADDR_CTXDSTORE_LOAD_TXD, ADDR_CTXDSTORE_POPCURRENTTXD, ADDR_CTXDSTORE_PUSHCURRENTTXD,
-        ADDR_CTXDSTORE_REMOVE_REF, ADDR_CTXDSTORE_REMOVE_TXD_SLOT, ADDR_CTXDSTORE_SETCURRENTTXD,
-        ADDR_RPCLUMPSTREAMREAD, ADDR_RWSTREAMCLOSE, ADDR_RWSTREAMFINDCHUNK, ADDR_RWSTREAMOPEN,
-        EXECUTABLE_SIGNATURES, hex,
+        ADDR_CCLUMPMODELINFO_ATOMIC_SETUP_LIGHTING_CB, ADDR_CCLUMPMODELINFO_SET_ATOMIC_RENDERER_CB,
+        ADDR_CCLUMPMODELINFO_SET_HIERARCHY_FOR_SKIN_ATOMIC, ADDR_CENTITY_CREATE_RW_OBJECT,
+        ADDR_CENTITY_UPDATE_RP_HANIM, ADDR_CENTITY_UPDATE_RW_FRAME, ADDR_CGAME_PROCESS,
+        ADDR_CMODELINFO_ADD_PED_MODEL, ADDR_CPED_DELETE_RW_OBJECT, ADDR_CPED_SET_MODEL_INDEX,
+        ADDR_CPEDMODELINFO_SETCLUMP, ADDR_CTASKSIMPLEIKMANAGER_MAKE_ABORTABLE,
+        ADDR_CTXDSTORE_ADD_REF, ADDR_CTXDSTORE_ADD_TXD_SLOT, ADDR_CTXDSTORE_LOAD_TXD,
+        ADDR_CTXDSTORE_POPCURRENTTXD, ADDR_CTXDSTORE_PUSHCURRENTTXD, ADDR_CTXDSTORE_REMOVE_REF,
+        ADDR_CTXDSTORE_REMOVE_TXD_SLOT, ADDR_CTXDSTORE_SETCURRENTTXD,
+        ADDR_CVISIBILITYPLUGINS_RENDER_PED_CB, ADDR_CVISIBILITYPLUGINS_SET_CLUMP_MODEL_INFO,
+        ADDR_GET_ANIM_HIERARCHY_FROM_CLUMP, ADDR_GET_ANIM_HIERARCHY_FROM_SKIN_CLUMP,
+        ADDR_GET_FIRST_ATOMIC, ADDR_IS_CLUMP_SKINNED, ADDR_RPANIMBLEND_CLUMP_EXTRACT_ASSOCIATIONS,
+        ADDR_RPANIMBLEND_CLUMP_FILL_FRAME_ARRAY, ADDR_RPANIMBLEND_CLUMP_GIVE_ASSOCIATIONS,
+        ADDR_RPANIMBLEND_CLUMP_INIT, ADDR_RPANIMBLEND_CREATE_ANIMATION_FOR_HIERARCHY,
+        ADDR_RPCLUMP_CLONE, ADDR_RPCLUMP_DESTROY, ADDR_RPCLUMP_FOR_ALL_ATOMICS,
+        ADDR_RPCLUMPSTREAMREAD, ADDR_RPHANIM_ID_GET_INDEX, ADDR_RPSKIN_GEOMETRY_GET_SKIN,
+        ADDR_RPSKIN_GET_VERTEX_BONE_WEIGHTS, ADDR_RTANIM_ANIMATION_DESTROY,
+        ADDR_RTANIM_INTERPOLATOR_SET_CURRENT_ANIM, ADDR_RWFRAME_TRANSFORM, ADDR_RWSTREAMCLOSE,
+        ADDR_RWSTREAMFINDCHUNK, ADDR_RWSTREAMOPEN, EXECUTABLE_SIGNATURES, hex,
     };
 
     #[test]
@@ -707,6 +1972,34 @@ mod tests {
             ADDR_CMODELINFO_ADD_PED_MODEL,
             ADDR_CPED_SET_MODEL_INDEX,
             ADDR_CPEDMODELINFO_SETCLUMP,
+            ADDR_CPED_DELETE_RW_OBJECT,
+            ADDR_CENTITY_CREATE_RW_OBJECT,
+            ADDR_CTASKSIMPLEIKMANAGER_MAKE_ABORTABLE,
+            ADDR_CENTITY_UPDATE_RW_FRAME,
+            ADDR_CENTITY_UPDATE_RP_HANIM,
+            ADDR_CCLUMPMODELINFO_SET_HIERARCHY_FOR_SKIN_ATOMIC,
+            ADDR_CCLUMPMODELINFO_ATOMIC_SETUP_LIGHTING_CB,
+            ADDR_CCLUMPMODELINFO_SET_ATOMIC_RENDERER_CB,
+            ADDR_CVISIBILITYPLUGINS_RENDER_PED_CB,
+            ADDR_CVISIBILITYPLUGINS_SET_CLUMP_MODEL_INFO,
+            ADDR_IS_CLUMP_SKINNED,
+            ADDR_GET_ANIM_HIERARCHY_FROM_CLUMP,
+            ADDR_GET_ANIM_HIERARCHY_FROM_SKIN_CLUMP,
+            ADDR_RPANIMBLEND_CREATE_ANIMATION_FOR_HIERARCHY,
+            ADDR_RPANIMBLEND_CLUMP_INIT,
+            ADDR_RPANIMBLEND_CLUMP_FILL_FRAME_ARRAY,
+            ADDR_RPANIMBLEND_CLUMP_EXTRACT_ASSOCIATIONS,
+            ADDR_RPANIMBLEND_CLUMP_GIVE_ASSOCIATIONS,
+            ADDR_RPCLUMP_CLONE,
+            ADDR_RPCLUMP_DESTROY,
+            ADDR_RPCLUMP_FOR_ALL_ATOMICS,
+            ADDR_GET_FIRST_ATOMIC,
+            ADDR_RPSKIN_GEOMETRY_GET_SKIN,
+            ADDR_RPSKIN_GET_VERTEX_BONE_WEIGHTS,
+            ADDR_RPHANIM_ID_GET_INDEX,
+            ADDR_RTANIM_INTERPOLATOR_SET_CURRENT_ANIM,
+            ADDR_RTANIM_ANIMATION_DESTROY,
+            ADDR_RWFRAME_TRANSFORM,
             ADDR_RWSTREAMOPEN,
             ADDR_RWSTREAMFINDCHUNK,
             ADDR_RPCLUMPSTREAMREAD,
