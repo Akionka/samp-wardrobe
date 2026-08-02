@@ -9,8 +9,6 @@ local new = imgui.new
 
 local CONFIG_PATH = getGameDirectory() .. [[\wardrobe.json]]
 local TEMP_CONFIG_PATH = CONFIG_PATH .. '.tmp'
--- Keep this in sync with src/model_ids.rs.
-local MODEL_ID_LIMIT = 20000
 local MOVEFILE_REPLACE_EXISTING = 0x1
 local MOVEFILE_WRITE_THROUGH = 0x8
 local ONLINE_PLAYER_REFRESH_SECONDS = 1
@@ -60,7 +58,6 @@ local state = {
   profile_id = new.char[64](),
   txd_path = new.char[260](),
   dff_path = new.char[260](),
-  donor_model_id = new.int(7),
   profile_enabled = new.bool(true),
   rule_player_name = new.char[64](),
   rule_profile_id = new.char[64](),
@@ -181,13 +178,6 @@ local function validate_config()
     if skin.enabled and (skin.txd_path == '' or skin.dff_path == '') then
       return false, 'Enabled custom skin ' .. skin_id .. ' needs TXD and DFF paths.'
     end
-    if type(skin.donor_model_id) ~= 'number'
-        or skin.donor_model_id % 1 ~= 0
-        or skin.donor_model_id < 0
-        or skin.donor_model_id >= MODEL_ID_LIMIT then
-        return false,
-          'Custom skin ' .. skin_id .. ' needs a GTA model donor ID from 0 to ' .. (MODEL_ID_LIMIT - 1) .. '.'
-    end
   end
 
   for index, rule in ipairs(state.config.rules) do
@@ -232,7 +222,6 @@ local function load_config()
     set_buffer(state.profile_id, '')
     set_buffer(state.txd_path, '')
     set_buffer(state.dff_path, '')
-    state.donor_model_id[0] = 7
     state.profile_enabled[0] = true
     set_buffer(state.rule_player_name, '')
     set_buffer(state.rule_profile_id, '')
@@ -267,7 +256,6 @@ local function load_config()
   set_buffer(state.profile_id, '')
   set_buffer(state.txd_path, '')
   set_buffer(state.dff_path, '')
-  state.donor_model_id[0] = 7
   state.profile_enabled[0] = true
   set_buffer(state.rule_player_name, '')
   set_buffer(state.rule_profile_id, '')
@@ -329,7 +317,6 @@ local function clear_profile_editor()
   set_buffer(state.profile_id, '')
   set_buffer(state.txd_path, '')
   set_buffer(state.dff_path, '')
-  state.donor_model_id[0] = 7
   state.profile_enabled[0] = true
 end
 
@@ -341,7 +328,6 @@ local function select_profile(skin_id)
   set_buffer(state.profile_id, skin_id)
   set_buffer(state.txd_path, skin.txd_path)
   set_buffer(state.dff_path, skin.dff_path)
-  state.donor_model_id[0] = tonumber(skin.donor_model_id) or 7
   state.profile_enabled[0] = skin.enabled
 end
 
@@ -357,7 +343,6 @@ local function add_profile()
     enabled = true,
     txd_path = '',
     dff_path = '',
-    donor_model_id = 7,
   }
   select_profile(skin_id)
   state.dirty = true
@@ -406,7 +391,6 @@ local function sync_profile_fields()
 
   skin.txd_path = buffer_value(state.txd_path)
   skin.dff_path = buffer_value(state.dff_path)
-  skin.donor_model_id = state.donor_model_id[0]
   skin.enabled = state.profile_enabled[0]
   state.dirty = true
   set_status('Custom skin changes are staged. Save JSON to apply them in-game.', false)
@@ -680,7 +664,6 @@ local function draw_profiles()
   if input_text('Skin name', state.profile_id) then sync_profile_id() end
   if input_text('TXD path', state.txd_path) then sync_profile_fields() end
   if input_text('DFF path', state.dff_path) then sync_profile_fields() end
-  if input_int('Donor model ID', state.donor_model_id) then sync_profile_fields() end
   if imgui.Checkbox('Enabled##profile', state.profile_enabled) then
     sync_profile_fields()
     sync_selected_preset_skin(state.selected_skin)

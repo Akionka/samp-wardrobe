@@ -26,19 +26,6 @@ pub(super) fn load(
         return None;
     }
 
-    let donor_model_info = match unsafe { verified_ped_model_info(definition.donor_model_id) } {
-        Ok(model_info) => PedModelInfo {
-            address: model_info as usize,
-        },
-        Err(reason) => {
-            log::error!(
-                "skin source {skin_id}: donor model {} {reason}",
-                definition.donor_model_id
-            );
-            return None;
-        }
-    };
-
     let txd_path = match CString::new(definition.txd_path.as_str()) {
         Ok(path) => path,
         Err(_) => {
@@ -53,8 +40,7 @@ pub(super) fn load(
         .expect("hexadecimal TXD name cannot contain NUL");
 
     log::info!(
-        "loading skin source {skin_id}: donor={}, txd={}, dff={}",
-        definition.donor_model_id,
+        "loading skin source {skin_id}: txd={}, dff={}",
         definition.txd_path,
         definition.dff_path
     );
@@ -84,9 +70,7 @@ pub(super) fn load(
         }
     };
 
-    if let Err(reason) =
-        unsafe { prepare_skin_source(source_clump, donor_model_info.address as *mut c_void) }
-    {
+    if let Err(reason) = unsafe { prepare_skin_source(source_clump) } {
         log::error!("skin source {skin_id}: incompatible DFF source: {reason}");
         if unsafe { destroy_clump(source_clump) } {
             unsafe { remove_txd_slot(txd_slot, true) };
@@ -98,8 +82,7 @@ pub(super) fn load(
         return None;
     }
     log::info!(
-        "loaded skin source {skin_id}: donor={}, txd_slot={}, txd={}, dff={}",
-        definition.donor_model_id,
+        "loaded skin source {skin_id}: txd_slot={}, txd={}, dff={}",
         txd_slot,
         definition.txd_path,
         definition.dff_path
@@ -109,7 +92,6 @@ pub(super) fn load(
         source_clump: SourceClump {
             address: source_clump as usize,
         },
-        donor_model_info,
     })
 }
 
@@ -125,6 +107,7 @@ pub(super) fn apply(
     if ped_model_id(ped) != Some(server_model_id) {
         return Err("ped model changed before the skin-source swap");
     }
+    let model_info = unsafe { verified_ped_model_info(i32::from(server_model_id)) }?;
     let old_clump = ped_render_object(ped)
         .filter(|object| !object.is_null())
         .map(|object| object.address as *mut c_void)
@@ -138,14 +121,10 @@ pub(super) fn apply(
     if clone.is_null() {
         return Err("RpClumpClone returned null");
     }
-    log::debug!("skin-source swap: cloned and preparing the custom ped clump");
-    let prepared = match unsafe {
-        prepare_skin_clone(
-            clone,
-            resources.donor_model_info.address as *mut c_void,
-            ped,
-        )
-    } {
+    log::debug!(
+        "skin-source swap: cloned and preparing the custom ped clump for server model {server_model_id}"
+    );
+    let prepared = match unsafe { prepare_skin_clone(clone, model_info, ped) } {
         Ok(prepared) => prepared,
         Err(reason) => {
             if !unsafe { destroy_clump(clone) } {

@@ -8,17 +8,17 @@
   slots per frame; run it roughly every 200 ms while still reapplying a custom
   model as soon as the next poll observes a server-side skin reset.
 - [x] Add clear diagnostic logging for player-name matches, skin profiles,
-  source changes, missing assets, invalid JSON mappings, and unavailable donor
-  models.
+  source changes, missing assets, invalid JSON mappings, and unavailable server
+  ped models.
 
 ## Configuration and lifecycle
 
 - [x] Auto-reload `wardrobe.json` without restarting GTA. New
   profiles and matching rules become available safely.
-- [x] Support live skin-profile replacement when its TXD path, DFF path, or
-  donor model changes. Restore every streamed clone using the old source,
-  release it only after clone-identity liveness permits it, then load and apply
-  the replacement on the game thread.
+- [x] Support live skin-profile replacement when its TXD or DFF path changes.
+  Restore every streamed clone using the old source, release it only after
+  clone-identity liveness permits it, then load and apply the replacement on
+  the game thread.
 - [x] Detect TXD/DFF file changes even when `wardrobe.json` is unchanged.
   Compare modification time and file length about once per second, then rebuild
   the affected shared source for all matching local and remote players.

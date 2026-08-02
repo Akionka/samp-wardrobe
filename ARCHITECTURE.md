@@ -52,7 +52,7 @@ state. It runs only after GTA's original `CGame::Process` returns.
 | `StreamedPed` | SA-MP player ID, optional name, and opaque GTA ped address. There is no local/remote routing state. |
 | `AppliedPlayer` | Profile ID, original server model ID, and the exact installed clone identity. |
 | `FailedApplication` | Profile ID, source generation, server model ID, and normal render identity that suppress repeated failed clone installations. |
-| `SkinSourceResources` | Opaque TXD slot, source clump, and validated donor model-info handle. One loaded value is shared per profile. |
+| `SkinSourceResources` | Opaque TXD slot and source clump. One donor-free value is shared per profile. |
 | `PedRenderObject` | Comparable clump address plus geometry identity. Runtime never dereferences it. |
 | `LoadedSkinSource` | Active source revision, generation, resources, and all clone identities installed from it. |
 | `RetiredSkinSource` | Old resources and clone identities retained until a complete liveness scan finds no matching identity. |
@@ -63,7 +63,7 @@ state. It runs only after GTA's original `CGame::Process` returns.
 2. For each ped it reads its model ID and render identity. An installed clone whose identity or model differs from `AppliedPlayer` is stale server-reset state and is discarded.
 3. Runtime resolves the highest-priority rule. Rule/profile removal restores the matching clone to the stored server model; profile changes restore before applying the new profile.
 4. `SkinManager::source_for` returns a ready source and generation, a restore request for a changed or still-retiring source, or unavailable. Runtime retries the restore request for every streamed user until the old clones are gone; only then can the cache load a replacement.
-5. A ready source is cloned with `gta::apply_skin_source`. Success records both `AppliedPlayer` and the clone identity in `SourceCache`. Failure records its attempt fingerprint after the bridge has left or recovered the normal server clump.
+5. `gta::apply_skin_source` first validates the unchanged server model as an available `CPedModelInfo`, then clones the ready source and applies that model info only to the new clone. Success records both `AppliedPlayer` and the clone identity in `SourceCache`. Failure records its attempt fingerprint after the bridge has left or recovered the normal server clump.
 6. Runtime retires sources no longer desired, prunes state after a complete scan, then gives exact live render identities to `SourceCache` for cleanup.
 
 ## Critical contracts
@@ -75,8 +75,8 @@ state. It runs only after GTA's original `CGame::Process` returns.
 | `SkinManager::cleanup_retired_sources` | Releases a retired TXD/source only when its recorded clone identities are absent from a complete live-ped scan. |
 | `Runtime::restore_profile_users` | Restores all currently streamed clones that use a changed source before any replacement can load. |
 | `Runtime::restore_server_model` | Restores only when both the exact clone and remembered model are still current; otherwise it preserves the newer server representation. |
-| `gta::load_skin_source` | Validates files and donor ped type, loads TXD/DFF, and prepares the source without model-slot allocation. |
-| `gta::apply_skin_source` | Makes and validates an animated clone, transfers associations, replaces the entity render object, and verifies the model ID did not change. |
+| `gta::load_skin_source` | Validates intrinsic files, hierarchy, skin geometry, weights, and bounds; then loads a donor-free TXD/DFF source without model-slot allocation. |
+| `gta::apply_skin_source` | Validates the unchanged server model as `CPedModelInfo`, configures an animated clone for that model, transfers associations, replaces the entity render object, and verifies the model ID did not change. |
 | `gta::restore_skin_source` | Rebuilds the remembered server clump after safely deleting the matching clone and transfers animations back. |
 
 ## Safety and lifecycle rules

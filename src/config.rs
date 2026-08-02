@@ -18,7 +18,6 @@ pub struct SkinDefinition {
     pub enabled: bool,
     pub txd_path: String,
     pub dff_path: String,
-    pub donor_model_id: i32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -187,13 +186,6 @@ fn parse(text: &str) -> Result<SkinConfig, String> {
         {
             return Err(format!("skin {skin_id} has an empty asset path"));
         }
-        if !model_ids::is_valid_model_id(definition.donor_model_id) {
-            return Err(format!(
-                "skin {skin_id} has invalid donor_model_id {}; donor IDs must be valid GTA model IDs from 0 to {}",
-                definition.donor_model_id,
-                model_ids::MODEL_ID_LIMIT - 1,
-            ));
-        }
     }
 
     for (index, rule) in config.rules.iter().enumerate() {
@@ -251,8 +243,7 @@ mod tests {
                     "draft": {
                         "enabled": false,
                         "txd_path": "",
-                        "dff_path": "",
-                        "donor_model_id": 7
+                        "dff_path": ""
                     }
                 },
                 "rules": []
@@ -264,13 +255,25 @@ mod tests {
     }
 
     #[test]
-    fn donor_model_id_accepts_every_valid_gta_model_id() {
-        let config = parse(
+    fn donor_free_profiles_and_legacy_donor_profiles_are_equivalent() {
+        let donor_free = parse(
             r#"{
                 "skins": {
-                    "unsafe": {
-                        "txd_path": "unsafe.txd",
-                        "dff_path": "unsafe.dff",
+                    "staff": {
+                        "txd_path": "staff.txd",
+                        "dff_path": "staff.dff"
+                    }
+                },
+                "rules": []
+            }"#,
+        )
+        .unwrap();
+        let legacy = parse(
+            r#"{
+                "skins": {
+                    "staff": {
+                        "txd_path": "staff.txd",
+                        "dff_path": "staff.dff",
                         "donor_model_id": 18000
                     }
                 },
@@ -279,7 +282,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(config.skins["unsafe"].donor_model_id, 18_000);
+        assert_eq!(donor_free.skins["staff"], legacy.skins["staff"]);
+        assert_eq!(
+            skin_source_revision(&donor_free.skins["staff"]),
+            skin_source_revision(&legacy.skins["staff"])
+        );
     }
 
     #[test]
@@ -287,9 +294,9 @@ mod tests {
         let mut config = parse(
             r#"{
                 "skins": {
-                    "combined": { "txd_path": "combined.txd", "dff_path": "combined.dff", "donor_model_id": 7 },
-                    "player": { "txd_path": "player.txd", "dff_path": "player.dff", "donor_model_id": 7 },
-                    "model": { "txd_path": "model.txd", "dff_path": "model.dff", "donor_model_id": 7 }
+                    "combined": { "txd_path": "combined.txd", "dff_path": "combined.dff" },
+                    "player": { "txd_path": "player.txd", "dff_path": "player.dff" },
+                    "model": { "txd_path": "model.txd", "dff_path": "model.dff" }
                 },
                 "rules": [
                     { "profile_id": "model", "server_model_id": 67 },

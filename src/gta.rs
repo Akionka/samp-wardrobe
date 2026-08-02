@@ -105,7 +105,7 @@ const RWSTREAM_READ: i32 = 1;
 const RW_ID_CLUMP: u32 = 0x10;
 
 // Model 7 is a vanilla CPedModelInfo in the supported GTA SA 1.0 US build.
-// Its vtable is used to distinguish ped donors from vehicles and objects.
+// Its vtable is used to distinguish ped model infos from vehicles and objects.
 const KNOWN_PED_MODEL_ID: i32 = 7;
 
 struct ExecutableSignature {
@@ -469,7 +469,6 @@ const EXECUTABLE_SIGNATURES: &[ExecutableSignature] = &[
 pub struct SkinSourceResources {
     txd_slot: i32,
     source_clump: SourceClump,
-    donor_model_info: PedModelInfo,
 }
 
 #[derive(Debug)]
@@ -492,11 +491,6 @@ impl AnimAssociations {
     const fn is_empty(self) -> bool {
         self.address.is_null()
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct PedModelInfo {
-    address: usize,
 }
 
 /// The exact RenderWare object Wardrobe installed on a ped. Runtime may compare
@@ -696,13 +690,9 @@ unsafe fn destroy_clump(clump: *mut c_void) -> bool {
     destroyed != 0
 }
 
-unsafe fn prepare_skin_source(
-    clump: *mut c_void,
-    model_info: *mut c_void,
-) -> Result<(), &'static str> {
-    let hierarchy = unsafe { validated_ped_hierarchy(clump) }?;
+unsafe fn prepare_skin_source(clump: *mut c_void) -> Result<(), &'static str> {
+    unsafe { validated_ped_hierarchy(clump) }?;
     unsafe { prepare_skin_geometry(clump) }?;
-    unsafe { setup_skin_atomics(clump, hierarchy, model_info, true) }?;
     Ok(())
 }
 
@@ -713,7 +703,7 @@ unsafe fn prepare_skin_clone(
 ) -> Result<PreparedSkinClump, &'static str> {
     let hierarchy = unsafe { validated_ped_hierarchy(clump) }?;
     let hierarchy_node_count = unsafe { hierarchy_node_count(hierarchy) }?;
-    unsafe { setup_skin_atomics(clump, hierarchy, model_info, false) }?;
+    unsafe { setup_skin_atomics(clump, hierarchy, model_info) }?;
 
     let animation: *mut c_void =
         unsafe { call_cdecl_1(ADDR_RPANIMBLEND_CREATE_ANIMATION_FOR_HIERARCHY, hierarchy) };
@@ -793,9 +783,8 @@ unsafe fn validated_ped_hierarchy(clump: *mut c_void) -> Result<*mut c_void, &'s
     Ok(hierarchy)
 }
 
-/// Mirrors the skinned-geometry preparation performed by
-/// `CClumpModelInfo::SetClump` without giving the donor model-info ownership of
-/// this source. `RpClumpClone` shares the prepared geometry with its clones.
+/// Validates and normalizes intrinsic skinned-geometry data shared by every
+/// clone. Model-info-dependent RenderWare callbacks are applied per clone.
 unsafe fn prepare_skin_geometry(clump: *mut c_void) -> Result<(), &'static str> {
     let atomic: *mut c_void = unsafe { call_cdecl_1(ADDR_GET_FIRST_ATOMIC, clump) };
     if atomic.is_null() {
@@ -903,24 +892,19 @@ unsafe fn setup_skin_atomics(
     clump: *mut c_void,
     hierarchy: *mut c_void,
     model_info: *mut c_void,
-    configure_source_rendering: bool,
 ) -> Result<(), &'static str> {
     unsafe {
         set_clump_model_info(clump, model_info);
-        if configure_source_rendering {
-            // CClumpModelInfo::SetClump performs these once on the streamed
-            // model source. RpClumpClone carries both into each clone.
-            for_all_atomics(
-                clump,
-                ADDR_CCLUMPMODELINFO_ATOMIC_SETUP_LIGHTING_CB,
-                model_info,
-            );
-            for_all_atomics(
-                clump,
-                ADDR_CCLUMPMODELINFO_SET_ATOMIC_RENDERER_CB,
-                ADDR_CVISIBILITYPLUGINS_RENDER_PED_CB as *mut c_void,
-            );
-        }
+        for_all_atomics(
+            clump,
+            ADDR_CCLUMPMODELINFO_ATOMIC_SETUP_LIGHTING_CB,
+            model_info,
+        );
+        for_all_atomics(
+            clump,
+            ADDR_CCLUMPMODELINFO_SET_ATOMIC_RENDERER_CB,
+            ADDR_CVISIBILITYPLUGINS_RENDER_PED_CB as *mut c_void,
+        );
         for_all_atomics(
             clump,
             ADDR_CCLUMPMODELINFO_SET_HIERARCHY_FOR_SKIN_ATOMIC,
@@ -1288,16 +1272,16 @@ unsafe fn get_model_info(model_id: i32) -> *mut c_void {
     memory::read(model_info_address).unwrap_or_default()
 }
 
-/// Returns a donor only after proving it has CPedModelInfo's vtable. The
-/// configuration parser cannot make this check: GTA's model-info table is
-/// game-owned and must only be inspected from the game thread.
+/// Returns a ped model-info only after proving it has CPedModelInfo's vtable.
+/// GTA's model-info table is game-owned and must only be inspected from the
+/// game thread.
 unsafe fn verified_ped_model_info(model_id: i32) -> Result<*mut c_void, &'static str> {
     if !is_valid_model_id(model_id) {
         return Err("is outside the valid GTA model range");
     }
 
-    let donor = unsafe { get_model_info(model_id) };
-    if donor.is_null() {
+    let model_info = unsafe { get_model_info(model_id) };
+    if model_info.is_null() {
         return Err("is not available in GTA's model-info table");
     }
 
@@ -1306,17 +1290,17 @@ unsafe fn verified_ped_model_info(model_id: i32) -> Result<*mut c_void, &'static
         return Err("cannot be type-checked because GTA's known ped model is unavailable");
     }
 
-    let Some(donor_vtable): Option<usize> = memory::read(donor as usize) else {
+    let Some(model_vtable): Option<usize> = memory::read(model_info as usize) else {
         return Err("has an unreadable model-info vtable");
     };
     let Some(ped_vtable): Option<usize> = memory::read(known_ped as usize) else {
         return Err("cannot be type-checked because GTA's known ped vtable is unreadable");
     };
-    if donor_vtable != ped_vtable {
+    if model_vtable != ped_vtable {
         return Err("is not a CPedModelInfo ped model");
     }
 
-    Ok(donor)
+    Ok(model_info)
 }
 
 fn hex(bytes: &[u8]) -> String {

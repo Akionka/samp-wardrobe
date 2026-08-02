@@ -30,10 +30,10 @@ GTA frame thread.
 
 `wardrobe.json` is represented by [`SkinDefinition`](src/config.rs),
 [`SkinRule`](src/config.rs), and [`SkinConfig`](src/config.rs). A definition
-contains the enabled state, TXD/DFF paths, and donor model ID. A donor need
-only be a valid GTA model ID in JSON; the game-thread loader additionally
-rejects donors that are not `CPedModelInfo` ped models. The UI applies the same
-numeric range validation.
+contains the enabled state and TXD/DFF paths. Legacy `donor_model_id` keys are
+ignored so existing profiles remain valid. The MoonLoader UI neither displays
+nor writes that key, while preserving it when another field in a legacy profile
+is edited.
 
 Rules match exact player names, server model IDs, or both. Matching priority is
 name plus model, then name, then model. Disabled rules and profiles do not
@@ -45,16 +45,20 @@ per second and retains the previous configuration after invalid edits.
 For every matching [`StreamedPed`](src/samp.rs), Runtime reads the current
 server model and render-object identity. It asks `SkinManager` for the
 profile's prepared source. The cache holds one TXD, prepared source clump, and
-validated donor per profile; `gta::apply_skin_source` clones that source for
-each matching ped without changing `m_nModelIndex`.
+no model-info handle per profile; `gta::apply_skin_source` clones that source
+for each matching ped without changing `m_nModelIndex`. Before cloning, it
+validates that the ped's unchanged server model is an available `CPedModelInfo`
+and uses that model info only to configure the clone's clump association,
+lighting/render callbacks, and skin-atomic hierarchy.
 
-Before installation, the bridge validates the source hierarchy, skin geometry,
-all required ped bone tags, and live AnimBlend frame count. It prepares the
-clone, transfers live animation associations, aborts secondary IK, replaces the
+Source loading validates the files, hierarchy, skin geometry, weights, and
+bounds without depending on a GTA ped model. Before installation, the bridge
+also validates the clone's live AnimBlend frame count. It prepares the clone,
+transfers live animation associations, aborts secondary IK, replaces the
 ordinary render object through GTA's virtual lifecycle, preserves the entity's
 streaming/effect bookkeeping, copies bone pointers, and updates RenderWare and
-HAnim state. The source and clone retain the server model ID, so local and
-remote peds follow the same tested path.
+HAnim state. The clone and ped retain the server model ID, so local and remote
+peds follow the same tested path.
 
 `AppliedPlayer` stores only the profile ID, remembered server model ID, and
 installed render-object identity. A changed render-object pointer, an address

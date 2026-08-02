@@ -234,7 +234,6 @@ mod tests {
             enabled: true,
             txd_path: "skin.txd".to_owned(),
             dff_path: "skin.dff".to_owned(),
-            donor_model_id: 7,
         };
         let revision = SkinSourceRevision {
             definition,
