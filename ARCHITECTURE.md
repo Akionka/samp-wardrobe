@@ -32,11 +32,16 @@ from GTA's `CGame::Process` detour after the original game function returns.
 | --- | --- | --- |
 | [src/lib.rs](src/lib.rs) | DLL entry point and startup thread. | `logging`, `config`, `samp`, `gta`, `runtime` |
 | [src/game_frame.rs](src/game_frame.rs) | Private capability proving execution is in the post-`CGame::Process` frame phase. | `runtime`, `gta`, `skin_loader` |
-| [src/runtime.rs](src/runtime.rs) | Frame-thread orchestration, player mappings, restoration. | All runtime-facing modules |
+| [src/runtime.rs](src/runtime.rs) | Frame-thread orchestration, rule routing, and GTA hook installation. | All runtime-facing modules |
+| [src/runtime/lifecycle.rs](src/runtime/lifecycle.rs) | Applied-ped restoration, streamed-out pruning, server-reset detection, and resource-retirement liveness. | Private child of `runtime`; uses Runtime state and `SkinManager`. |
 | [src/config.rs](src/config.rs) | JSON types, validation, rule matching, configuration revisions. | `model_ids`, `Runtime`, `SkinManager` |
-| [src/skin_loader.rs](src/skin_loader.rs) | Separate remote private-model and local instance-source caches, including reload and retirement. | `config`, `gta`, `Runtime` |
-| [src/gta.rs](src/gta.rs) | Guarded GTA/RenderWare calls, ped model slots, opaque clump handles, and TXD/DFF lifetime. | `memory`, `model_ids`, `SkinManager` |
-| [src/samp.rs](src/samp.rs) | SA-MP build detection and safe player/ped scanning. | `memory`, `Runtime`, `samp_hooks` |
+| [src/skin_loader.rs](src/skin_loader.rs) | Stable `SkinManager` façade coordinating separate remote private-model and local instance-source caches. | `config`, `gta`, `Runtime` |
+| [src/skin_loader/model_cache.rs](src/skin_loader/model_cache.rs) | Remote-player private model IDs, asset reloads, retirement grace period, and safe ID reuse. | Private child of `skin_loader`; uses `gta` model-slot APIs. |
+| [src/skin_loader/instance_cache.rs](src/skin_loader/instance_cache.rs) | Local-player raw source clumps, reload status, retirement, and liveness-gated release. | Private child of `skin_loader`; uses `gta` instance-source APIs. |
+| [src/gta.rs](src/gta.rs) | Public GTA bridge, private ped-model slots, opaque handles, executable guards, and shared low-level RenderWare calls. | `memory`, `model_ids`, `SkinManager` |
+| [src/gta/instance_skin.rs](src/gta/instance_skin.rs) | Local-only source loading plus clone install, recovery, restoration, and source release. | Private child of `gta`; shares only the parent bridge's opaque types and guarded primitives. |
+| [src/samp.rs](src/samp.rs) | Safe live player/ped scanning for a previously recognized SA-MP layout. | `memory`, `Runtime`, `samp_hooks` |
+| [src/samp/layout.rs](src/samp/layout.rs) | Supported SA-MP PE entry-point fingerprints and packed per-version player-pool layouts. | Private child of `samp`; selects the scanner layout. |
 | [src/samp_hooks.rs](src/samp_hooks.rs) | Guarded R1 event hooks that request an early scan. | `memory`, `Samp`, `Runtime` |
 | [src/memory.rs](src/memory.rs) | Fallible, bit-pattern-safe process-memory reads. | `samp`, `gta`, `samp_hooks` |
 | [src/model_ids.rs](src/model_ids.rs) | GTA model-ID validity and Wardrobe private range. | `config`, `gta` |
@@ -74,10 +79,9 @@ from GTA's `CGame::Process` detour after the original game function returns.
 | `Runtime` (private, [src/runtime.rs](src/runtime.rs)) | Owns all active state and polling time. | Stored once in `RUNTIME`; invoked by the GTA detour. |
 | `LivePedState` (private, [src/runtime.rs](src/runtime.rs)) | Model IDs and render-object pointers from a complete SA-MP ped scan. | Protects both retired private models and retired local sources during cleanup. |
 | `GameFrame` (private, [src/game_frame.rs](src/game_frame.rs)) | Unforgeable proof of the GTA frame thread after the original process call. | Required by all GTA/RenderWare mutation entry points. |
-| `LoadedSkin` (private, [src/skin_loader.rs](src/skin_loader.rs)) | Live `SkinResources` plus the revision that produced it. | Value in `SkinManager::loaded_models`. |
-| `RetiredSkin` (private, [src/skin_loader.rs](src/skin_loader.rs)) | Old resource set and its retirement time. | Held until no ped uses it and GTA teardown succeeds. |
-| `LoadedInstanceSkin` / `RetiredInstanceSkin` (private, [src/skin_loader.rs](src/skin_loader.rs)) | Revisioned source clump/TXD state for the local-only path. | Kept separate from private models and released only after the installed clone is gone. |
-| [`SkinManager`](src/skin_loader.rs) | Active, failed, retired, protected, and recyclable private models plus the independent instance cache. | Owned by `Runtime`; delegates game work to `gta`. |
+| `LoadedSkin` / `RetiredSkin` (private, [src/skin_loader/model_cache.rs](src/skin_loader/model_cache.rs)) | Live or retired remote private-model resource sets and their source revision/retirement time. | Held by `ModelCache` until GTA teardown succeeds. |
+| `LoadedInstanceSkin` / `RetiredInstanceSkin` (private, [src/skin_loader/instance_cache.rs](src/skin_loader/instance_cache.rs)) | Revisioned source clump/TXD state for the local-only path. | Held by `InstanceCache` and released only after the installed clone is gone. |
+| [`SkinManager`](src/skin_loader.rs) | Stable façade over independent `ModelCache` and `InstanceCache` lifecycles. | Owned by `Runtime`; delegates game work to the two private caches. |
 | [`SkinResources`](src/gta.rs) | Private GTA model ID and TXD slot. | Returned by `gta::load_skin`; held by loaded/retired skin records. |
 | [`SkinLoadFailure`](src/gta.rs) | Optional private ID that can be recycled after a failed load. | Returned to `SkinManager::model_for` so it does not lose a safe slot. |
 | [`InstanceSkinResources`](src/gta.rs) | TXD slot, owned raw source clump, and validated donor model-info handle; never a model ID. | Returned by `gta::load_instance_skin`; cloned only by the guarded GTA bridge. |
