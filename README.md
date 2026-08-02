@@ -4,6 +4,10 @@ Wardrobe lets you choose the GTA: San Andreas skins you see for yourself and
 other SA-MP players. It is made for roleplay: the server and other players are
 not changed—only your own game sees the custom model.
 
+One custom skin profile can be used for compatible players with different
+server-assigned skins. Wardrobe keeps each player's server skin ID intact, so
+the server continues to treat them normally.
+
 > Wardrobe is experimental. Use it only on servers where client-side cosmetic
 > modifications are allowed.
 
@@ -39,37 +43,52 @@ in the TXD, and the DFF needs the expected ped skeleton/frame hierarchy.
 - **Skins** describe the files Wardrobe should load.
 - **Rules** decide who receives each skin.
 
-Here is a complete small example:
+Here is a simple starting example. It shows `Jacob_Spencer` one custom skin:
 
 ```json
 {
   "skins": {
-    "jacob_spencer": {
+    "my_custom_skin": {
       "enabled": true,
       "txd_path": "models/myskin.txd",
-      "dff_path": "models/myskin.dff",
-      "donor_model_id": 7
+      "dff_path": "models/myskin.dff"
     }
   },
   "rules": [
     {
-      "profile_id": "jacob_spencer",
+      "profile_id": "my_custom_skin",
       "player_name": "Jacob_Spencer",
       "enabled": true
-    },
-    {
-      "profile_id": "jacob_spencer",
-      "server_model_id": 67,
-      "enabled": true
     }
-  ]
+  ],
+  "presets": {
+    "show_my_custom_skin": {
+      "profiles": {
+        "my_custom_skin": true
+      },
+      "rules": {
+        "Jacob_Spencer\u001f": true
+      }
+    }
+  }
 }
 ```
 
-Paths are relative to the GTA directory. `donor_model_id` is a normal GTA ped
-model used as a template for the custom one. Use the ID of the model the skin
-was originally created for. Wardrobe reserves IDs `18000` through `19999`, so
-they cannot be donors; it also rejects vehicles and objects when loading.
+Paths are relative to the GTA directory. You do not need to choose a donor
+model ID: Wardrobe prepares each compatible custom skin for the player's
+current server-assigned skin automatically. If an older profile still contains
+`donor_model_id`, Wardrobe safely ignores it; the in-game editor no longer
+shows that setting.
+
+In this example, `my_custom_skin` is just a name you choose for the TXD/DFF
+pair. `Jacob_Spencer` is the exact in-game player name to receive it. To apply
+the same skin by the player's server model instead, replace `player_name` with
+`server_model_id`, for example `"server_model_id": 67`.
+
+The `show_my_custom_skin` preset saves the enabled state of this skin and its
+rule, so you can switch that setup on again with one click in `/wardrobe`.
+Create and update presets with the in-game editor; it handles the rule entry
+inside `presets` automatically.
 
 A rule can match by player name, by the server-set model ID, or by both. Player
 names are exact and case-sensitive. When multiple rules apply, Wardrobe picks
@@ -105,9 +124,11 @@ and model swaps stay on GTA's frame thread.
 ## Optional in-game editor
 
 The MoonLoader editor is at `moonloader/wardrobe_ui/wardrobe_ui.lua`. It edits
-the same `wardrobe.json`; it does not need a special bridge to the ASI.
+the same `wardrobe.json`; it does not need a special bridge to the ASI. Copy it
+to `GTA_FOLDER/moonloader/scripts/wardrobe_ui/wardrobe_ui.lua`, or use
+`cargo make deploy-ui` when building from source.
 
-Copy it to `GTA_FOLDER/moonloader/`, then open it with:
+Then open it with:
 
 ```text
 /wardrobe
@@ -129,6 +150,9 @@ Wardrobe writes `wardrobe.log` in the GTA directory. Check it first.
 
 - A missing or invalid TXD/DFF is logged and that skin is skipped. The player
   keeps the server skin, or keeps the last successfully loaded custom skin.
+- If a custom skin cannot be applied to one player, Wardrobe leaves that
+  player's normal server skin in place. Other players using the same profile
+  can still receive it.
 - Invalid JSON leaves the last working configuration active.
 - If no rule matches, Wardrobe leaves the player on the server-provided skin.
 
@@ -147,7 +171,7 @@ Regular:
 cargo build --release
 ```
 
-With `cargo-make` :
+With `cargo-make`:
 ```powershell
 cargo make debug
 ```
@@ -156,9 +180,9 @@ or
 cargo make deploy
 ```
 
-This builds a debug Wardrobe ASI and copies it, together with its PDB, to the
-GTA directory stored in `GTA_DIR`.
-Debug builds wait for a debugger to attach to `gta_sa.exe`.
+`cargo make debug` builds the debug ASI, copies it and its PDB to `GTA_DIR`,
+and waits for a debugger to attach to `gta_sa.exe`. `cargo make deploy` builds
+and copies the release ASI.
 
 To deploy the optional editor:
 
