@@ -46,7 +46,9 @@ The configured Cargo target is `i686-pc-windows-msvc`.
   directory.
 
 Set `$env:GTA_DIR = 'D:\Games\GTASA'` before any deploy command. Do not deploy
-or alter a game installation unless the task explicitly calls for it.
+or alter a game installation unless the task explicitly calls for it. After
+successfully completing a feature, deployment is required: run both `cargo make
+deploy` and `cargo make deploy-ui` before handing the work off.
 
 ## Coding Style & Safety
 

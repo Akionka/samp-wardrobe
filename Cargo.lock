@@ -134,6 +134,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rak_samp_plugin_api"
+version = "0.1.0-alpha.2"
+source = "git+https://github.com/Akionka/rak-samp.git?tag=v0.1.0-alpha.2#4fbad4cd5b1d7af2584948ce4c4555ce822c091a"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "region"
 version = "3.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -166,6 +174,7 @@ name = "samp-wardrobe"
 version = "0.1.0"
 dependencies = [
  "log",
+ "rak_samp_plugin_api",
  "retour",
  "serde",
  "serde_json",
@@ -326,7 +335,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

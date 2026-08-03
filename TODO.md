@@ -4,9 +4,9 @@
 
 - [x] Validate the `skins` + `rules` JSON schema in-game with real streamed
   players. Confirm combined, player-only, and model-only rule precedence.
-- [x] Throttle polling. The current game-thread pass can scan up to 1004 SA-MP
-  slots per frame; run it roughly every 200 ms while still reapplying a custom
-  model as soon as the next poll observes a server-side skin reset.
+- [x] Configure complete SA-MP scan delay. The game thread scans up to 1004
+  slots at the configured interval, except after a valid config reload or an
+  optional rak-samp skin/stream refresh request.
 - [x] Add clear diagnostic logging for player-name matches, skin profiles,
   source changes, missing assets, invalid JSON mappings, and unavailable server
   ped models.
@@ -55,22 +55,13 @@
 ## Future event-driven detection
 
 - [x] Keep polling as the default, reliable detection path.
-- [x] Add guarded pure-Rust SA-MP 0.3.7-R1 refresh hooks. They observe
-  `CRemotePlayer::Spawn` after a remote GTA ped is created and
-  `ScrSetPlayerSkin` after a server model change, then request an immediate
-  pass on the existing GTA frame thread. Require a version marker and exact
-  target bytes before patching; allow SAMPFUNCS to observe RPCs upstream, skip
-  both hooks when a target has already been changed, and keep polling active
-  in every case.
-- [ ] Research and smoke-test exact event-hook signatures for 0.3.7-R3-1,
-  0.3.7-R4, and 0.3.DL-R1 before extending direct hooks beyond R1. Keep the
-  existing polling fallback as the default safety net.
-- [ ] Smoke-test the guarded hook path on a clean SA-MP 0.3.7-R1 install
-  without SAMPFUNCS, including a remote spawn and a server-issued skin reset.
-- [ ] Optionally add a SAMPFUNCS integration through a thin C++ bridge if its
-  callback API proves more stable than maintaining direct hooks. The bridge
-  should enqueue events only; GTA/RenderWare work must remain on the existing
-  `CGame::Process` path.
+- [x] Integrate the optional rak-samp host for incoming `SetPlayerSkin`, player
+  stream-in, and player stream-out requests. Its callback only coalesces a
+  frame-thread scan; if the host is unavailable, the configured complete-scan
+  fallback remains active.
+- [ ] Smoke-test ready rak-samp hosts on R1, R3-1, R4, and DL: confirm local and
+  remote skin changes reconcile on the next frame, and repeat with the host
+  absent, failed, and ABI-incompatible.
 
 ## Later quality of life
 

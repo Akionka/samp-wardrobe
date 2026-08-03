@@ -4,9 +4,9 @@ mod gta;
 mod logging;
 mod memory;
 mod model_ids;
+mod rak_samp;
 mod runtime;
 mod samp;
-mod samp_hooks;
 mod skin_loader;
 
 use std::ffi::c_void;
@@ -30,6 +30,8 @@ fn plugin_thread() {
             return;
         }
     };
+    logging::set_level(config.log_level);
+    log::info!("Wardrobe started");
     let skin_count = config.skins.len();
     let rule_count = config.rules.len();
     if rule_count == 0 {
@@ -51,6 +53,7 @@ fn plugin_thread() {
         }
     };
     log::info!("found {} at 0x{:08X}", samp.version().name(), samp.base());
+    rak_samp::start_listener();
 
     if let Err(error) = gta::validate_executable() {
         log::error!("{error}");

@@ -1,8 +1,9 @@
 use crate::config::{CONFIG_PATH, ConfigWatcher, SkinConfig};
 use crate::game_frame::GameFrame;
 use crate::gta;
+use crate::logging;
+use crate::rak_samp;
 use crate::samp::{PlayerId, Samp, StreamedPed};
-use crate::samp_hooks;
 use crate::skin_loader::{SkinManager, SkinSourceLookup};
 use retour::GenericDetour;
 use std::collections::{HashMap, HashSet};
@@ -14,8 +15,6 @@ use std::time::{Duration, Instant};
 mod lifecycle;
 
 use lifecycle::skin_clone_reset_kind;
-
-const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 type GameProcessFn = unsafe extern "cdecl" fn();
 
@@ -88,7 +87,7 @@ struct Runtime {
     matched_players: HashSet<PlayerId>,
     applied_players: HashMap<PlayerId, AppliedPlayer>,
     failed_applications: HashMap<PlayerId, FailedApplication>,
-    last_poll: Option<Instant>,
+    last_complete_scan: Option<Instant>,
 }
 
 impl Runtime {
@@ -101,31 +100,30 @@ impl Runtime {
             matched_players: HashSet::new(),
             applied_players: HashMap::new(),
             failed_applications: HashMap::new(),
-            last_poll: None,
+            last_complete_scan: None,
         }
     }
 
     fn process_game_frame(&mut self, frame: &GameFrame) {
-        // The hook runs every GTA frame, but scanning a 1004-slot SA-MP pool
-        // does not need to. Five polls per second keeps skin changes
-        // responsive without doing the full scan on every frame. Guarded
-        // SA-MP event hooks may request an earlier pass after a remote ped
-        // spawns or the server changes a skin.
+        // The watcher throttles its own filesystem checks, so invoke it every
+        // frame. A valid reload and a coalesced rak-samp event both request a
+        // complete scan on this frame; otherwise use the configured baseline.
         let now = Instant::now();
-        let event_refresh_reason = samp_hooks::take_refresh_request();
-        if let Some(reason) = event_refresh_reason {
-            log::debug!("SA-MP event requested an immediate skin scan after {reason}");
+        let config_reloaded = self.reload_config_if_changed();
+        let event_refresh_requested = rak_samp::take_refresh_request();
+        if let Some(reason) = event_refresh_requested {
+            log::debug!("rak-samp requested an immediate skin scan after {reason}");
         }
-        if event_refresh_reason.is_none()
-            && self
-                .last_poll
-                .is_some_and(|last_poll| now.duration_since(last_poll) < POLL_INTERVAL)
-        {
+        if !complete_scan_due(
+            self.last_complete_scan,
+            now,
+            config_reloaded,
+            event_refresh_requested.is_some(),
+            self.config.poll_interval(),
+        ) {
             return;
         }
-        self.last_poll = Some(now);
-
-        self.reload_config_if_changed();
+        self.last_complete_scan = Some(now);
 
         if self.config.rules.is_empty() && self.applied_players.is_empty() {
             self.failed_applications.clear();
@@ -364,19 +362,38 @@ impl Runtime {
         }
     }
 
-    fn reload_config_if_changed(&mut self) {
+    fn reload_config_if_changed(&mut self) -> bool {
         let Some(config) = self.config_watcher.poll_change() else {
-            return;
+            return false;
         };
 
         let skin_count = config.skins.len();
         let rule_count = config.rules.len();
+        let poll_interval_ms = config.poll_interval_ms;
+        let log_level = config.log_level;
+        logging::set_level(log_level);
         self.skins.apply_config(&config);
         self.config = config;
         self.matched_players.clear();
         self.failed_applications.clear();
-        log::info!("reloaded {CONFIG_PATH}: {skin_count} skin(s), {rule_count} rule(s)");
+        log::info!(
+            "reloaded {CONFIG_PATH}: {skin_count} skin(s), {rule_count} rule(s), {poll_interval_ms} ms complete scan interval, {} logging",
+            log_level.name()
+        );
+        true
     }
+}
+
+fn complete_scan_due(
+    last_complete_scan: Option<Instant>,
+    now: Instant,
+    config_reloaded: bool,
+    event_refresh_requested: bool,
+    scan_interval: Duration,
+) -> bool {
+    config_reloaded
+        || event_refresh_requested
+        || last_complete_scan.is_none_or(|last_scan| now.duration_since(last_scan) >= scan_interval)
 }
 
 static RUNTIME: OnceLock<Mutex<Runtime>> = OnceLock::new();
@@ -407,11 +424,6 @@ pub fn install(config: SkinConfig, samp: Samp) -> Result<(), String> {
     unsafe { hook.enable() }
         .map_err(|error| format!("could not enable CGame::Process hook: {error}"))?;
 
-    match samp_hooks::install(&samp) {
-        Ok(()) => log::info!("installed guarded SA-MP spawn and skin-change hooks"),
-        Err(error) => log::warn!("SA-MP event hooks are unavailable; using polling: {error}"),
-    }
-
     Ok(())
 }
 
@@ -441,9 +453,49 @@ unsafe extern "cdecl" fn game_process_detour() {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppliedPlayer, FailedApplication, gta, retain_applied_sources, streamed_profile_users,
+        AppliedPlayer, FailedApplication, complete_scan_due, gta, retain_applied_sources,
+        streamed_profile_users,
     };
     use std::collections::{HashMap, HashSet};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn complete_scan_schedule_prioritizes_reloads_events_and_the_fallback_interval() {
+        let now = Instant::now();
+        let recent_scan = now;
+        let interval = Duration::from_secs(2);
+        let elapsed_scan = now - interval;
+
+        assert!(complete_scan_due(None, now, false, false, interval));
+        assert!(complete_scan_due(
+            Some(recent_scan),
+            now,
+            true,
+            false,
+            interval
+        ));
+        assert!(complete_scan_due(
+            Some(recent_scan),
+            now,
+            false,
+            true,
+            interval
+        ));
+        assert!(!complete_scan_due(
+            Some(recent_scan),
+            now,
+            false,
+            false,
+            interval
+        ));
+        assert!(complete_scan_due(
+            Some(elapsed_scan),
+            now,
+            false,
+            false,
+            interval
+        ));
+    }
 
     #[test]
     fn a_source_generation_change_makes_a_failed_application_eligible() {

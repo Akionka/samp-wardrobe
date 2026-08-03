@@ -17,6 +17,7 @@ the server continues to treat them normally.
 - SA-MP 0.3.7-R1, 0.3.7-R3-1, 0.3.7-R4, or 0.3.DL-R1
 - An ASI loader (e.g. [Silent's ASI Loader](https://www.gtagarage.com/mods/show.php?id=21709))
 - A compatible `.txd` and `.dff` pair for every custom skin
+- Optional: `rak_samp.asi` for next-frame reconciliation after skin or player-stream events
 
 Wardrobe is version-specific. It detects the supported SA-MP builds before
 reading their player data and refuses unknown revisions. It also checks the
@@ -38,8 +39,9 @@ in the TXD, and the DFF needs the expected ped skeleton/frame hierarchy.
 
 ## Configuring skins
 
-`wardrobe.json` has two parts:
+`wardrobe.json` has three parts:
 
+- **Runtime settings** control the baseline scan interval and log verbosity.
 - **Skins** describe the files Wardrobe should load.
 - **Rules** decide who receives each skin.
 
@@ -47,6 +49,8 @@ Here is a simple starting example. It shows `Jacob_Spencer` one custom skin:
 
 ```json
 {
+  "poll_interval_ms": 2000,
+  "log_level": "info",
   "skins": {
     "my_custom_skin": {
       "enabled": true,
@@ -80,6 +84,13 @@ current server-assigned skin automatically. If an older profile still contains
 `donor_model_id`, Wardrobe safely ignores it; the in-game editor no longer
 shows that setting.
 
+`poll_interval_ms` sets the delay between complete fallback scans. It defaults
+to `2000` and accepts values from `100` to `60000`. A lower value finds
+streamed-ped changes sooner when rak-samp is absent, at the cost of scanning more
+often. `log_level` defaults to `"info"`; choose `"error"`, `"warn"`,
+`"info"`, `"debug"`, or `"trace"`. Both settings take effect after Wardrobe
+reloads a valid JSON edit.
+
 In this example, `my_custom_skin` is just a name you choose for the TXD/DFF
 pair. `Jacob_Spencer` is the exact in-game player name to receive it. To apply
 the same skin by the player's server model instead, replace `player_name` with
@@ -108,18 +119,18 @@ players automatically.
 
 ## How Wardrobe notices changes
 
-Polling remains the reliable baseline: Wardrobe checks streamed players about
-five times per second, so it still notices server skin changes even when no
-event hook can be used.
+Wardrobe completes a streamed-player reconciliation scan at the configured
+`poll_interval_ms` delay (two seconds by default). That is the reliable
+baseline, including when `rak_samp.asi` is not installed.
 
-On an unmodified SA-MP 0.3.7-R1 client, Wardrobe can also request an immediate
-check after a remote player spawns or SA-MP applies a skin RPC. It checks both
-the client version marker and the exact target bytes before installing either
-hook. SAMPFUNCS may observe the same RPCs upstream without preventing these
-post-handler hooks. If another mod has already changed either target, Wardrobe
-deliberately leaves both alone and logs that it is using polling. The other
-supported revisions currently use polling only. In every mode, model loading
-and model swaps stay on GTA's frame thread.
+If the optional `rak_samp.asi` host is installed and reports that it is ready,
+Wardrobe listens for incoming `SetPlayerSkin`, player stream-in, and player
+stream-out events and performs its next complete scan on the next GTA frame.
+This applies to every supported SA-MP build that the rak-samp host marks ready.
+If the host is missing, incompatible, fails to initialize, or cannot accept the
+listener, Wardrobe logs one fallback message and continues with the configured
+scan delay. Wardrobe never installs direct SA-MP spawn or skin-change hooks.
+In every mode, model loading and model swaps stay on GTA's frame thread.
 
 ## Optional in-game editor
 

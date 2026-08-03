@@ -37,8 +37,10 @@ is edited.
 
 Rules match exact player names, server model IDs, or both. Matching priority is
 name plus model, then name, then model. Disabled rules and profiles do not
-match. [`ConfigWatcher`](src/config.rs) accepts valid changed JSON about once
-per second and retains the previous configuration after invalid edits.
+match. `poll_interval_ms` controls complete-scan fallback delay (default 2000,
+valid range 100–60000) and `log_level` selects error, warn, info, debug, or
+trace output. [`ConfigWatcher`](src/config.rs) accepts valid changed JSON about
+once per second and retains the previous configuration after invalid edits.
 
 ## Universal clump skinning
 
@@ -101,8 +103,20 @@ scan is not treated as an empty scan, so player and source state remain safe.
 `Samp::all_peds` provides the complete render-identity liveness scan required
 for source retirement.
 
-Runtime polls about every 200 ms. Optional guarded R1 SA-MP hooks request an
-earlier poll after spawn or skin events; they never mutate GTA themselves.
+[`rak_samp::start_listener`](src/rak_samp.rs) starts after `samp.dll` is found. Its
+worker waits up to 30 seconds for an ABI-v1-ready optional `rak_samp.asi` host,
+then retains one incoming-RPC subscription for the process lifetime. The
+callback coalesces `SetPlayerSkin`, player stream-in, and player stream-out
+requests in an atomic flag and always continues traffic; it neither reads
+payload data nor accesses GTA or Runtime.
+
+Runtime invokes the throttled configuration watcher every GTA frame. It
+performs a complete scan immediately after a valid configuration reload or a
+consumed rak-samp request, and otherwise after the configured `poll_interval_ms`
+delay. A missing,
+incompatible, failed, or unregistrable rak-samp host emits one fallback message;
+the configured scan remains active. Wardrobe installs no direct SA-MP event
+hooks.
 
 ## Verification
 

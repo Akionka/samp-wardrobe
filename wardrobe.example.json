@@ -1,4 +1,6 @@
 {
+  "poll_interval_ms": 2000,
+  "log_level": "info",
   "skins": {
     "jacob_spencer": {
       "enabled": true,

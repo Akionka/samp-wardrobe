@@ -12,6 +12,10 @@ local TEMP_CONFIG_PATH = CONFIG_PATH .. '.tmp'
 local MOVEFILE_REPLACE_EXISTING = 0x1
 local MOVEFILE_WRITE_THROUGH = 0x8
 local ONLINE_PLAYER_REFRESH_SECONDS = 1
+local DEFAULT_POLL_INTERVAL_MS = 2000
+local MIN_POLL_INTERVAL_MS = 100
+local MAX_POLL_INTERVAL_MS = 60000
+local LOG_LEVELS = { 'error', 'warn', 'info', 'debug', 'trace' }
 
 ffi.cdef [[
   int __stdcall MoveFileExA(const char* existingFileName, const char* newFileName, unsigned long flags);
@@ -48,7 +52,13 @@ local function input_int(label, value)
 end
 
 local state = {
-  config = { skins = {}, rules = {}, presets = {} },
+  config = {
+    poll_interval_ms = DEFAULT_POLL_INTERVAL_MS,
+    log_level = 'info',
+    skins = {},
+    rules = {},
+    presets = {},
+  },
   window_open = new.bool(false),
   dirty = false,
   status = 'Use /wardrobe to open this editor.',
@@ -63,6 +73,7 @@ local state = {
   rule_profile_id = new.char[64](),
   rule_server_model_id = new.int(-1),
   rule_enabled = new.bool(true),
+  poll_interval_ms = new.int(DEFAULT_POLL_INTERVAL_MS),
   profile_search = new.char[64](),
   preset_name = new.char[64](),
   online_players = {},
@@ -138,6 +149,8 @@ end
 
 local function ensure_schema(config)
   if type(config) ~= 'table' then config = {} end
+  if config.poll_interval_ms == nil then config.poll_interval_ms = DEFAULT_POLL_INTERVAL_MS end
+  if config.log_level == nil then config.log_level = 'info' end
   if type(config.skins) ~= 'table' then config.skins = {} end
   if type(config.rules) ~= 'table' then config.rules = {} end
   if type(config.presets) ~= 'table' then config.presets = {} end
@@ -165,6 +178,22 @@ local function ensure_schema(config)
 end
 
 local function validate_config()
+  if type(state.config.poll_interval_ms) ~= 'number'
+      or state.config.poll_interval_ms % 1 ~= 0
+      or state.config.poll_interval_ms < MIN_POLL_INTERVAL_MS
+      or state.config.poll_interval_ms > MAX_POLL_INTERVAL_MS then
+    return false, 'Complete scan interval must be an integer from '
+      .. MIN_POLL_INTERVAL_MS .. ' to ' .. MAX_POLL_INTERVAL_MS .. ' ms.'
+  end
+
+  local valid_log_level = false
+  for _, level in ipairs(LOG_LEVELS) do
+    if state.config.log_level == level then valid_log_level = true end
+  end
+  if not valid_log_level then
+    return false, 'Log level must be error, warn, info, debug, or trace.'
+  end
+
   for skin_id, skin in pairs(state.config.skins) do
     if skin_id == '' then
       return false, 'A custom skin has an empty name.'
@@ -215,7 +244,13 @@ end
 local function load_config()
   local file = io.open(CONFIG_PATH, 'rb')
   if not file then
-    state.config = { skins = {}, rules = {}, presets = {} }
+    state.config = {
+      poll_interval_ms = DEFAULT_POLL_INTERVAL_MS,
+      log_level = 'info',
+      skins = {},
+      rules = {},
+      presets = {},
+    }
     state.dirty = false
     state.selected_skin = nil
     state.selected_rule = nil
@@ -227,6 +262,7 @@ local function load_config()
     set_buffer(state.rule_profile_id, '')
     state.rule_server_model_id[0] = -1
     state.rule_enabled[0] = true
+    state.poll_interval_ms[0] = state.config.poll_interval_ms
     set_buffer(state.profile_search, '')
     state.selected_preset = nil
     set_buffer(state.preset_name, '')
@@ -261,6 +297,7 @@ local function load_config()
   set_buffer(state.rule_profile_id, '')
   state.rule_server_model_id[0] = -1
   state.rule_enabled[0] = true
+  state.poll_interval_ms[0] = state.config.poll_interval_ms
   set_buffer(state.profile_search, '')
   state.selected_preset = nil
   set_buffer(state.preset_name, '')
@@ -801,13 +838,13 @@ end
 
 local function rule_priority_label(rule)
   if rule.player_name and rule.server_model_id ~= nil then
-    return 'Priority: player + server model'
+    return 'Priority 3: player name + server model (higher number wins)'
   elseif rule.player_name then
-    return 'Priority: player name'
+    return 'Priority 2: player name (higher number wins)'
   elseif rule.server_model_id ~= nil then
-    return 'Priority: server model'
+    return 'Priority 1: server model (higher number wins)'
   end
-  return 'Set a player name or server model ID.'
+  return 'Priority 0: set a player name or server model ID.'
 end
 
 local function draw_rules()
@@ -844,12 +881,37 @@ local function draw_rules()
   imgui.EndGroup()
 end
 
+local function draw_runtime_settings()
+  imgui.Text('Runtime settings')
+  imgui.PushItemWidth(180)
+  if input_int('Complete scan interval (ms)', state.poll_interval_ms) then
+    state.config.poll_interval_ms = state.poll_interval_ms[0]
+    state.dirty = true
+    set_status('Runtime setting changes are staged. Save JSON to apply them in-game.', false)
+  end
+  imgui.PopItemWidth()
+
+  if imgui.BeginCombo('Log level', state.config.log_level) then
+    for _, level in ipairs(LOG_LEVELS) do
+      local selected = state.config.log_level == level
+      if imgui.Selectable(level, selected) then
+        state.config.log_level = level
+        state.dirty = true
+        set_status('Runtime setting changes are staged. Save JSON to apply them in-game.', false)
+      end
+      if selected then imgui.SetItemDefaultFocus() end
+    end
+    imgui.EndCombo()
+  end
+  imgui.TextDisabled('Interval: 100-60000 ms. Logging applies after a valid reload.')
+end
+
 imgui.OnFrame(
   function()
     return state.window_open[0] and isSampAvailable()
   end,
   function()
-    imgui.SetNextWindowSize(imgui.ImVec2(620, 710), imgui.Cond.FirstUseEver)
+    imgui.SetNextWindowSize(imgui.ImVec2(620, 780), imgui.Cond.FirstUseEver)
     imgui.Begin('Wardrobe', state.window_open, imgui.WindowFlags.None)
 
     imgui.Text('Edit the loader configuration. Changes affect the game only after Save JSON.')
@@ -858,11 +920,25 @@ imgui.OnFrame(
       imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.2, 1.0), 'Unsaved changes')
     end
     imgui.Separator()
-    draw_profiles()
-    imgui.Separator()
-    draw_presets()
-    imgui.Separator()
-    draw_rules()
+
+    if imgui.BeginTabBar('##wardrobe_tabs') then
+      if imgui.BeginTabItem('Skins & rules') then
+        draw_profiles()
+        imgui.Separator()
+        draw_presets()
+        imgui.Separator()
+        draw_rules()
+        imgui.EndTabItem()
+      end
+
+      if imgui.BeginTabItem('Runtime') then
+        draw_runtime_settings()
+        imgui.EndTabItem()
+      end
+
+      imgui.EndTabBar()
+    end
+
     imgui.Separator()
 
     if state.status_is_error then

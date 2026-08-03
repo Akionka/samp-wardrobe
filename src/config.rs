@@ -3,10 +3,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::model_ids;
+use crate::{logging::LogLevel, model_ids};
 
 pub const CONFIG_PATH: &str = "wardrobe.json";
+pub const DEFAULT_POLL_INTERVAL_MS: u64 = 2_000;
 const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(1);
+const MIN_POLL_INTERVAL_MS: u64 = 100;
+const MAX_POLL_INTERVAL_MS: u64 = 60_000;
 
 fn enabled_by_default() -> bool {
     true
@@ -53,15 +56,38 @@ impl SkinRule {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct SkinConfig {
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    #[serde(default)]
+    pub log_level: LogLevel,
     #[serde(default)]
     pub skins: HashMap<String, SkinDefinition>,
     #[serde(default)]
     pub rules: Vec<SkinRule>,
 }
 
+fn default_poll_interval_ms() -> u64 {
+    DEFAULT_POLL_INTERVAL_MS
+}
+
+impl Default for SkinConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
+            log_level: LogLevel::default(),
+            skins: HashMap::new(),
+            rules: Vec::new(),
+        }
+    }
+}
+
 impl SkinConfig {
+    pub fn poll_interval(&self) -> Duration {
+        Duration::from_millis(self.poll_interval_ms)
+    }
+
     pub fn matching_rule(
         &self,
         player_name: Option<&str>,
@@ -181,6 +207,12 @@ fn parse(text: &str) -> Result<SkinConfig, String> {
     let config: SkinConfig =
         serde_json::from_str(text).map_err(|error| format!("invalid {CONFIG_PATH}: {error}"))?;
 
+    if !(MIN_POLL_INTERVAL_MS..=MAX_POLL_INTERVAL_MS).contains(&config.poll_interval_ms) {
+        return Err(format!(
+            "poll_interval_ms must be between {MIN_POLL_INTERVAL_MS} and {MAX_POLL_INTERVAL_MS}"
+        ));
+    }
+
     for (skin_id, definition) in &config.skins {
         if definition.enabled && (definition.txd_path.is_empty() || definition.dff_path.is_empty())
         {
@@ -252,6 +284,21 @@ mod tests {
         .unwrap();
 
         assert!(!config.skins["draft"].enabled);
+    }
+
+    #[test]
+    fn defaults_runtime_settings_for_existing_configurations() {
+        let config = parse("{}").unwrap();
+
+        assert_eq!(config.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
+        assert_eq!(config.log_level, LogLevel::Info);
+    }
+
+    #[test]
+    fn rejects_an_unsafe_complete_scan_interval() {
+        let error = parse(r#"{ "poll_interval_ms": 99 }"#).unwrap_err();
+
+        assert!(error.contains("poll_interval_ms must be between 100 and 60000"));
     }
 
     #[test]
